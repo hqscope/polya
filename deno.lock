@@ -1,0 +1,31 @@
+{
+  "version": "5",
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.57.2": "ae34123f923ca1622834de1b1e20b4ec735cd183d0fbf8fd7c3d67ce2f358909",
+    "https://esm.sh/pdf-lib@1.17.1": "cf7c5527829cb9bbb3aa20d339c530067441c10eb98880360aea9e77c3c87ff8",
+    "https://esm.sh/unpdf@0.12.1": "fbffa8cb0799e760249fb47326cc2134abda5e15d1f71e2dc20c1594217aaad6",
+    "https://esm.sh/unpdf@0.12.1/denonext/pdfjs.mjs": "05a65f2d4a1ec50188b9df481cd3730b5b1a160f3fde5efd84ea8b0551e495b9",
+    "https://esm.sh/unpdf@0.12.1/denonext/unpdf.mjs": "11b8f12478e2a1bd12ff9294699b6d41c9eb2425ee1832579a967c7049c0ef6a"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@supabase/ssr@0.9",
+        "npm:@supabase/supabase-js@^2.99.1",
+        "npm:@tailwindcss/postcss@4",
+        "npm:@types/node@20",
+        "npm:@types/react-dom@19",
+        "npm:@types/react@19",
+        "npm:eslint-config-next@16.1.6",
+        "npm:eslint@9",
+        "npm:lucide-react@0.563",
+        "npm:next@16.1.6",
+        "npm:pdf-lib@^1.17.1",
+        "npm:react-dom@19.2.3",
+        "npm:react@19.2.3",
+        "npm:tailwindcss@4",
+        "npm:typescript@5"
+      ]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+# dependencies / build
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# env & secrets — only .env.template is committed
+.env
+.env.*
+!.env.template
+noel_canvas_token.txt
+
+# supabase local state
+supabase/.temp/
+supabase/.branches/
+
+# real course data (copyrighted) — never commit; fixtures/ is the only committed corpus
+data/
+
+# os / editor noise
+.DS_Store
+*.log
+.gstack/

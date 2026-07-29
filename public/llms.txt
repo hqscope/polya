@@ -1,0 +1,23 @@
+# Polya
+
+> Polya is a course-aware AI tutor for college students. It connects to the
+> student's school Canvas, studies the actual course materials — readings,
+> slides, pages, and lecture recordings — and tutors with hints, steps, and
+> worked examples instead of handing over answers. Every answer cites the
+> exact page, slide, or lecture moment it came from, and instructors set a
+> per-course assistance policy (Open, Guided, Practice, or Review) that
+> visibly governs how much Polya reveals.
+
+Polya is built by Canvascope Inc. and named for George Pólya, whose book
+How to Solve It taught teaching-by-questions. It is free to start: students
+sign in with Google and connect their school's Canvas.
+
+## Pages
+
+- [Home](https://askpolya.com/): what Polya does, how it works, and answers to common questions
+- [How Polya works](https://askpolya.com/how-it-works): the full student walkthrough — connecting a course, citations, and the help ladder
+- [For instructors](https://askpolya.com/for-instructors): the per-course assistance policies and how they govern Polya
+- [Sign in](https://askpolya.com/login): Google sign-in for students
+- [Privacy](https://askpolya.com/privacy): how Polya handles accounts, Canvas connections, and course materials
+- [Terms](https://askpolya.com/terms): the terms that govern use of Polya
+- [Contact](https://askpolya.com/contact): how to reach the team

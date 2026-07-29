@@ -1,0 +1,18 @@
+[
+  {
+    "id": 98765,
+    "display_name": "lecture-7-respiration.pdf",
+    "content-type": "application/pdf",
+    "folder_id": 900002,
+    "size": 52133,
+    "updated_at": "2026-07-01T12:00:00Z"
+  },
+  {
+    "id": 98766,
+    "display_name": "syllabus-image.png",
+    "content-type": "image/png",
+    "folder_id": 900001,
+    "size": 2048,
+    "updated_at": "2026-07-01T12:00:00Z"
+  }
+]

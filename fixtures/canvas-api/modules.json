@@ -1,0 +1,32 @@
+[
+  {
+    "id": 30001,
+    "name": "Unit 3 — Cellular Respiration",
+    "items": [
+      {
+        "type": "Page",
+        "title": "Week 6 Overview",
+        "page_url": "week-6-overview",
+        "html_url": "https://canvas.school.edu/courses/1549777/pages/week-6-overview"
+      },
+      {
+        "type": "Page",
+        "title": "Module-only page",
+        "page_url": "module-only-page",
+        "html_url": "https://canvas.school.edu/courses/1549777/pages/module-only-page"
+      },
+      {
+        "type": "File",
+        "title": "lecture-7-respiration.pdf",
+        "content_id": 98765,
+        "html_url": "https://canvas.school.edu/courses/1549777/modules/items/1"
+      },
+      {
+        "type": "Assignment",
+        "title": "Problem Set 4",
+        "content_id": 77001,
+        "html_url": "https://canvas.school.edu/courses/1549777/assignments/77001"
+      }
+    ]
+  }
+]

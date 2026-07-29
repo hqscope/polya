@@ -1,0 +1,41 @@
+{
+  "course_name": "Bio 1A (demo)",
+  "files": [
+    {
+      "title": "Lecture 7 - Cellular Respiration",
+      "origin": "canvas_file",
+      "source_kind": "pdf",
+      "content_role": "material",
+      "path": "pdfs/lecture-7-respiration.pdf",
+      "content_type": "application/pdf",
+      "ext": "pdf"
+    },
+    {
+      "title": "Choosing a Statistical Test (method)",
+      "origin": "canvas_file",
+      "source_kind": "pdf",
+      "content_role": "material",
+      "path": "pdfs/choosing-a-test-method.pdf",
+      "content_type": "application/pdf",
+      "ext": "pdf"
+    },
+    {
+      "title": "Week 6 Overview",
+      "origin": "canvas_page",
+      "source_kind": "html",
+      "content_role": "material",
+      "path": "pages/week-6-overview.html",
+      "content_type": "text/html",
+      "ext": "html"
+    },
+    {
+      "title": "Lecture 7 recording transcript",
+      "origin": "upload_transcript",
+      "source_kind": "transcript_vtt",
+      "content_role": "material",
+      "path": "transcripts/lecture-7.vtt",
+      "content_type": "text/vtt",
+      "ext": "vtt"
+    }
+  ]
+}

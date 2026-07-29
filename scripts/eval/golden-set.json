@@ -1,0 +1,33 @@
+[
+  {
+    "question": "Why does the electron transport chain need oxygen?",
+    "expect_source": "Lecture 7 - Cellular Respiration",
+    "expect_terms": [
+      "terminal electron acceptor",
+      "oxygen"
+    ]
+  },
+  {
+    "question": "What are the steps for choosing a statistical test?",
+    "expect_source": "Choosing a Statistical Test (method)",
+    "expect_terms": [
+      "number of groups",
+      "paired"
+    ]
+  },
+  {
+    "question": "When are office hours this week?",
+    "expect_source": "Week 6 Overview",
+    "expect_terms": [
+      "Wednesday",
+      "3pm"
+    ]
+  },
+  {
+    "question": "What did the professor say was key for the exam about oxygen?",
+    "expect_source": "Lecture 7 recording transcript",
+    "expect_terms": [
+      "terminal electron acceptor"
+    ]
+  }
+]
