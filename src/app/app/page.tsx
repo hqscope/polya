@@ -1,10 +1,8 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
 import { getAuthenticatedAppUser } from "@/lib/auth/session";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import CourseCard from "@/components/app/CourseCard";
-
-const TERMINAL_STATUSES = new Set(["ready", "failed", "skipped", "needs_ocr"]);
 
 const POLICY_LABELS: Record<string, string> = {
   open: "Open",
@@ -14,24 +12,29 @@ const POLICY_LABELS: Record<string, string> = {
 };
 
 export default async function AppHomePage() {
-  const { user, supabase } = await getAuthenticatedAppUser();
+  const { user, supabase, outage } = await getAuthenticatedAppUser();
+  if (outage) {
+    throw new Error("auth-outage");
+  }
   if (!user) {
-    redirect("/login?next=/app");
+    return redirectToLogin();
   }
 
-  const [{ data: courses }, { data: policies }, { data: sources }] =
+  // Source counts come pre-aggregated, one row per course
+  // (`polya_course_source_counts`, security_invoker), not every source row.
+  const [{ data: courses }, { data: policies }, { data: counts }] =
     await Promise.all([
       supabase
         .from("polya_courses")
         .select("id, name, code, term_name")
         .order("created_at", { ascending: false }),
       supabase.from("polya_course_policies").select("course_id, mode"),
-      supabase.from("polya_sources").select("course_id, status"),
+      supabase.from("polya_course_source_counts").select("course_id, total, ready, in_progress"),
     ]);
 
   if (!courses || courses.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center overflow-y-auto p-10 text-center">
+      <div className="flex h-full flex-col items-center justify-center overflow-y-auto p-6 text-center sm:p-10">
         <p className="eyebrow">Welcome</p>
         <h1 className="mt-3 text-[21px]">Bring in your first course</h1>
         <p className="mt-3 max-w-md text-[13px] leading-[1.65] text-ink2">
@@ -49,25 +52,20 @@ export default async function AppHomePage() {
   const policyByCourse = new Map(
     (policies ?? []).map((row) => [row.course_id as string, row.mode as string]),
   );
-  const statsByCourse = new Map<
-    string,
-    { ready: number; total: number; importing: boolean }
-  >();
-  for (const row of sources ?? []) {
-    const stats = statsByCourse.get(row.course_id) ?? {
-      ready: 0,
-      total: 0,
-      importing: false,
-    };
-    stats.total += 1;
-    if (row.status === "ready") stats.ready += 1;
-    if (!TERMINAL_STATUSES.has(row.status)) stats.importing = true;
-    statsByCourse.set(row.course_id, stats);
-  }
+  const statsByCourse = new Map(
+    (counts ?? []).map((row) => [
+      row.course_id as string,
+      {
+        ready: Number(row.ready) || 0,
+        total: Number(row.total) || 0,
+        importing: Number(row.in_progress) > 0,
+      },
+    ]),
+  );
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-[860px] flex-col gap-[22px] px-9 pt-9 pb-12">
+      <div className="mx-auto flex max-w-[860px] flex-col gap-[22px] px-5 pt-9 pb-12 sm:px-9">
         <div className="flex items-end gap-4 border-b border-line pb-[18px]">
           <div className="flex flex-col gap-1">
             <h1 className="text-[21px]">Your courses</h1>

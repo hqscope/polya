@@ -1,5 +1,7 @@
 import { getSupabaseFunctionsUrl, getSupabaseConfig } from "@/lib/supabase/config";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { AI_BUSY_POLYA_TUTOR } from "@/lib/ai-busy";
+import { POLYA_ERROR_SIGNED_OUT } from "@/lib/user-message";
 
 export interface TutorSource {
   n: number;
@@ -16,15 +18,40 @@ export interface TutorSource {
 
 export type MasteryVerdict = "pass" | "partial" | "fail";
 
+// Lecture Mode. The board text box sends a plain string; a capture client sends
+// the structured window. The tutor normalizes both into one shape server-side,
+// so nothing here needs to know which surface produced it.
+export interface LectureContextInput {
+  typed?: string;
+  transcript?: string;
+  frames?: Array<string | { text: string }>;
+  captured_at?: string;
+}
+
+// What the room contributed to this answer — shape only. The captured text is
+// never echoed back; this exists so the UI can say the board was shortened
+// rather than quietly answering half an example.
+export interface LiveContextSummary {
+  live: boolean;
+  captured_at: string | null;
+  transcript_chars: number;
+  frames: number;
+  truncated: boolean;
+}
+
 export interface TutorStreamHandlers {
   onSources: (payload: {
     sources: TutorSource[];
     conversation_id: string;
     policy_mode: string;
+    live_context?: LiveContextSummary | null;
   }) => void;
   onDelta: (text: string) => void;
   onDone: (payload: { message_id: string | null; mastery_check_id?: string | null }) => void;
-  onError: (message: string) => void;
+  /** `code` is `"busy"` when the project-wide AI budget (agent_plan R-5) is
+   * spent for the day; `message` is already the right copy to show either
+   * way (COPY.md §11's `ai.busy.polya.tutor` for busy). */
+  onError: (message: string, code?: string) => void;
   /** Fired on a mastery-answer turn once the tutor has judged the attempt. */
   onMastery?: (payload: { check_id: string; verdict: MasteryVerdict }) => void;
 }
@@ -35,6 +62,7 @@ export interface TutorRequest {
   conversation_id?: string;
   attempt?: boolean;
   mastery?: { phase: "start"; concept: string } | { phase: "answer"; check_id: string };
+  context?: string | LectureContextInput;
 }
 
 // Streams polya-tutor, dispatching sources / delta / done / error events.
@@ -48,7 +76,7 @@ export async function streamTutor(
     data: { session },
   } = await supabase.auth.getSession();
   if (!session?.access_token) {
-    handlers.onError("You're signed out. Please sign in again.");
+    handlers.onError(POLYA_ERROR_SIGNED_OUT, "unauthorized");
     return;
   }
 
@@ -64,8 +92,14 @@ export async function streamTutor(
   });
 
   if (!response.ok || !response.body) {
-    const data = (await response.json().catch(() => ({}))) as { error?: string };
-    handlers.onError(data.error ?? "The tutor is unavailable right now.");
+    const data = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
+    if (response.status === 503 && data.code === "busy") {
+      // No auto-retry: COPY.md §11 makes the "Try Again" affordance (if any)
+      // an explicit user action, never something this client does itself.
+      handlers.onError(AI_BUSY_POLYA_TUTOR, "busy");
+      return;
+    }
+    handlers.onError(data.error ?? "The tutor is unavailable right now.", data.code);
     return;
   }
 
@@ -98,7 +132,13 @@ export async function streamTutor(
           handlers.onMastery?.(payload);
           break;
         case "error":
-          handlers.onError(payload.error);
+          // Budget claims happen before the stream opens (R-5), so a busy
+          // refusal is expected on the non-OK branch above, not here — this
+          // is defensive in case that ever changes.
+          handlers.onError(
+            payload.code === "busy" ? AI_BUSY_POLYA_TUTOR : payload.error,
+            payload.code,
+          );
           break;
       }
     }

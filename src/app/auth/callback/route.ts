@@ -4,7 +4,7 @@ import {
   copyResponseCookies,
   createRouteHandlerSupabaseClient,
 } from "@/lib/supabase/server";
-import { sanitizeNextPath } from "@/lib/site";
+import { sanitizeNextPath } from "@/lib/auth/next-path";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const nextPath = sanitizeNextPath(request.nextUrl.searchParams.get("next"));

@@ -29,10 +29,35 @@ import {
   type Connection,
 } from "../_shared/process.ts";
 import type { SourceRow } from "../_shared/ingest.ts";
+import {
+  assertStorageRoom,
+  STORAGE_FULL_STATUS,
+  StorageFullError,
+  storageFullBody,
+} from "../_shared/storage-quota.ts";
+import { claimRateLimit, rateLimitedResponse } from "../_shared/rate-limit.ts";
+import {
+  HOUR_SECONDS,
+  IMPORT_MAX_BODY_BYTES,
+  IMPORT_MAX_BODY_BYTES_WITH_SEED_FIXTURE,
+  importRateWindow,
+} from "../_shared/polya-rate-limits.ts";
+import { readJsonCapped } from "../_shared/read-json-capped.ts";
+import { bearerToken, secretMatches } from "../_shared/service-role.ts";
 
 // Local-only escape hatch so the mock-Canvas integration test can point a
 // connection at 127.0.0.1. Never set in the deployed project.
 const ALLOW_INSECURE_CANVAS = Deno.env.get("POLYA_ALLOW_INSECURE_CANVAS") === "1";
+// Labels this function's Canvas token uses in the audit log.
+const SOURCE = "polya-import";
+
+// `seed_fixture` writes arbitrary uploaded bytes through the service role and
+// queues them for OCR/embedding, so it only exists where this flag is set
+// (local dev, QA). Unset in production: the action is refused like an unknown one.
+const SEED_FIXTURE_ENABLED = Deno.env.get("POLYA_ENABLE_SEED_FIXTURE") === "1";
+const MAX_BODY_BYTES = SEED_FIXTURE_ENABLED
+  ? IMPORT_MAX_BODY_BYTES_WITH_SEED_FIXTURE
+  : IMPORT_MAX_BODY_BYTES;
 
 // Background worker (pump) config. The import runs server-side: `start` queues
 // sources and kicks a self-chaining worker that claims a batch, processes it
@@ -205,10 +230,27 @@ Deno.serve(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+  // A-9: every action is a JSON POST.
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed.", code: "method_not_allowed" }, 405);
+  }
+
+  // The body is read before auth (the pump action authenticates differently),
+  // so it's capped first: a declared or streamed body over the cap is refused
+  // without buffering it (A-9). A malformed body must not fall into the
+  // generic 500 catch below either (R-21).
+  const parsed = await readJsonCapped<Body>(request, MAX_BODY_BYTES);
+  if (!parsed.ok) {
+    return parsed.status === 413
+      ? json({ error: "That request is too large.", code: "too_large" }, 413)
+      : json({ error: "Invalid request body.", code: "bad_request" }, 400);
+  }
+  const body = parsed.value;
+  if (!body || typeof body !== "object") {
+    return json({ error: "Invalid request body.", code: "bad_request" }, 400);
+  }
 
   try {
-    const body = (await request.json()) as Body;
-
     // The background worker authenticates with the service-role key, not a user
     // JWT — handle it before requireAuthUser.
     if (body.action === "pump") {
@@ -216,6 +258,15 @@ Deno.serve(async (request: Request): Promise<Response> => {
     }
 
     const user = await requireAuthUser(request);
+
+    // A-9: hourly per-user window for every user action (fails closed).
+    const rateWindow = importRateWindow(body.action);
+    if (!(await claimRateLimit(service, `user:${user.id}`, rateWindow.bucket, rateWindow.limit, HOUR_SECONDS))) {
+      return rateLimitedResponse({
+        message: "You're doing that a lot right now. Try again in a little while.",
+        headers: corsHeaders,
+      });
+    }
 
     switch (body.action) {
       case "start":
@@ -235,6 +286,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
       case "delete_course":
         return await handleDeleteCourse(user.id, body.course_id);
       case "seed_fixture":
+        if (!SEED_FIXTURE_ENABLED) {
+          return json({ error: "Unknown action", code: "bad_request" }, 400);
+        }
         return await handleSeedFixture(user.id, body);
       case "extension_import_start":
         return await handleExtensionImportStart(user.id, body);
@@ -246,6 +300,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
   } catch (error) {
     if (error instanceof HttpError) {
       return json({ error: error.message, code: httpErrorCode(error.status) }, error.status);
+    }
+    if (error instanceof StorageFullError) {
+      return json(storageFullBody(error), STORAGE_FULL_STATUS);
     }
     if (error instanceof CanvasAuthError) {
       return json(
@@ -261,7 +318,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
 type QueuedSource = EnumeratedSource;
 
 async function handleStart(userId: string, body: StartBody): Promise<Response> {
-  const connection = await loadConnectionWithToken(userId, body.connection_id);
+  const connection = await loadConnectionWithToken(userId, body.connection_id, {
+    source: SOURCE,
+    action: "query",
+    operation: "import_start",
+  });
   if (!connection) {
     return json({ error: "Connect your Canvas first.", code: "no_connection" }, 404);
   }
@@ -270,6 +331,9 @@ async function handleStart(userId: string, body: StartBody): Promise<Response> {
   if (canvasCourseIds.length === 0) {
     return json({ error: "Pick at least one course to bring in.", code: "bad_request" }, 400);
   }
+  // Over the Lectra storage quota nothing new could be saved, so refuse up
+  // front with a storage_full 403 instead of queueing sources that would fail.
+  await assertStorageRoom(service, userId, STORAGE_BUCKET, null);
 
   const client = new CanvasClient(connection.base_url, connection.access_token, {
     allowInsecure: ALLOW_INSECURE_CANVAS,
@@ -699,7 +763,12 @@ async function handleAddUpload(userId: string, body: UploadBody): Promise<Respon
 
 // One bounded pump step: advance a single source, then report progress.
 async function handleProcess(userId: string, courseId: string): Promise<Response> {
-  const connection = await loadConnectionWithToken(userId); // may be null for fixture/upload-only courses
+  // may be null for fixture/upload-only courses
+  const connection = await loadConnectionWithToken(userId, undefined, {
+    source: SOURCE,
+    action: "query",
+    operation: "import_process",
+  });
   const result = await processOneStep(
     userId,
     courseId,
@@ -751,11 +820,12 @@ async function handleKick(userId: string): Promise<Response> {
 // sweeper) — never a user JWT. The browser holds neither. Returns immediately;
 // the drain loop runs as a background task so the trigger doesn't block.
 async function handlePump(request: Request, body: PumpBody): Promise<Response> {
-  const auth = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
-  const pumpSecret = request.headers.get("x-polya-pump-secret")?.trim() ?? "";
-  const authorized =
-    (SERVICE_ROLE_KEY !== "" && auth === SERVICE_ROLE_KEY) ||
-    (PUMP_SECRET !== "" && pumpSecret === PUMP_SECRET);
+  // Constant-time compares (A-9); an unset expected secret never matches.
+  const [serviceKeyOk, pumpSecretOk] = await Promise.all([
+    secretMatches(bearerToken(request), SERVICE_ROLE_KEY),
+    secretMatches(request.headers.get("x-polya-pump-secret"), PUMP_SECRET),
+  ]);
+  const authorized = serviceKeyOk || pumpSecretOk;
   if (!authorized) {
     return json({ error: "Not authorized.", code: "forbidden" }, 403);
   }
@@ -826,7 +896,7 @@ async function selfInvokePump(userId: string, token: string): Promise<boolean> {
 // queue empties or the wall budget is hit (then hand off to a fresh invocation).
 async function runPump(userId: string, token: string): Promise<void> {
   const deadline = Date.now() + PUMP_BUDGET_MS;
-  const connByCourse = new Map<string, Connection | null>();
+  const connByCourse = new Map<string, Promise<Connection | null>>();
   // Shared across this invocation so lecture videos from the same course reuse
   // one media session instead of re-running the LTI dance per entry.
   const ctx = newAdvanceContext();
@@ -890,29 +960,40 @@ async function runPump(userId: string, token: string): Promise<void> {
 
 // Resolve (and cache) the Canvas connection for a source's course. Sources whose
 // bytes are already in storage (fixtures/uploads/extension) don't need one.
-async function resolveConnection(
+// The cache holds the pending load, so sources of one course advanced in the
+// same batch share a single token decrypt (and a single audit row).
+function resolveConnection(
   userId: string,
   source: SourceRow,
-  cache: Map<string, Connection | null>,
+  cache: Map<string, Promise<Connection | null>>,
 ): Promise<Connection | null> {
-  if (cache.has(source.course_id)) return cache.get(source.course_id) ?? null;
+  let pending = cache.get(source.course_id);
+  if (!pending) {
+    pending = loadCourseConnection(userId, source.course_id);
+    cache.set(source.course_id, pending);
+  }
+  return pending;
+}
 
+async function loadCourseConnection(userId: string, courseId: string): Promise<Connection | null> {
   const { data: course } = await service
     .from("polya_courses")
     .select("connection_id")
-    .eq("id", source.course_id)
+    .eq("id", courseId)
     .maybeSingle();
   const connectionId = (course?.connection_id as string | null) ?? undefined;
-  const loaded = await loadConnectionWithToken(userId, connectionId);
-  const connection: Connection | null = loaded
+  const loaded = await loadConnectionWithToken(userId, connectionId, {
+    source: SOURCE,
+    action: "query",
+    operation: "import_pump",
+  });
+  return loaded
     ? {
         base_url: loaded.base_url,
         access_token: loaded.access_token,
         allow_insecure: ALLOW_INSECURE_CANVAS,
       }
     : null;
-  cache.set(source.course_id, connection);
-  return connection;
 }
 
 // Mark every importing course whose work is done as complete (emits the
@@ -1053,6 +1134,7 @@ async function handleDeleteCourse(userId: string, courseId: string): Promise<Res
 // fixture seeder and QA. Uploads each file to storage and queues it so the same
 // process pump ingests it.
 async function handleSeedFixture(userId: string, body: SeedFixtureBody): Promise<Response> {
+  await assertStorageRoom(service, userId, STORAGE_BUCKET, null);
   const canvasCourseId = `fixture-${crypto.randomUUID().slice(0, 8)}`;
   const { data: courseRow, error: courseError } = await service
     .from("polya_courses")
@@ -1090,6 +1172,7 @@ async function handleSeedFixture(userId: string, body: SeedFixtureBody): Promise
     const sourceId = sourceRow.id as string;
     const storagePath = `${userId}/${courseId}/${sourceId}/original.${file.ext}`;
     const bytes = Uint8Array.from(atob(file.content_base64), (c) => c.charCodeAt(0));
+    await assertStorageRoom(service, userId, STORAGE_BUCKET, storagePath);
     const { error: uploadError } = await service.storage
       .from(STORAGE_BUCKET)
       .upload(storagePath, bytes, { contentType: file.content_type, upsert: true });

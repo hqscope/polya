@@ -3,8 +3,23 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import StorageFullNotice from "@/components/import/StorageFullNotice";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
-import { invokeFunction } from "@/lib/functions";
+import { FunctionError, invokeFunction } from "@/lib/functions";
+import type { StorageFull } from "@/lib/storage-full";
+import { detectStorageFull } from "@/lib/storage-full-client";
+import { AI_BUSY_POLYA_IMPORT_DETAIL } from "@/lib/ai-busy";
+import { POLYA_ERROR_SIGNED_OUT, userMessage } from "@/lib/user-message";
+import { announceImportStarted } from "@/lib/import-events";
+
+// `polya.transcript.processing`
+function processingNote(title: string): string {
+  return `Added “${title}”. It's being prepared and will appear in Materials shortly.`;
+}
+
+function readyNote(title: string): string {
+  return `Added “${title}”. It's ready to study.`;
+}
 
 interface Props {
   courseId: string;
@@ -23,10 +38,12 @@ export default function TranscriptUpload({ courseId }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [storageFull, setStorageFull] = useState<StorageFull | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
   async function handleFile(file: File) {
     setError(null);
+    setStorageFull(null);
     setNote(null);
     const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     const kind = KIND_BY_EXT[ext];
@@ -36,42 +53,63 @@ export default function TranscriptUpload({ courseId }: Props) {
     }
 
     setBusy(true);
+    // Any refusal of the direct upload might be full storage; later steps
+    // only when the failure looks like it.
+    let uploading = false;
     try {
       const supabase = createBrowserSupabaseClient();
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      if (!user) throw new Error("Please sign in again.");
+      if (!user) throw new FunctionError(POLYA_ERROR_SIGNED_OUT, "signed_out", 401);
 
       const storagePath = `${user.id}/uploads/${crypto.randomUUID()}.${ext}`;
+      uploading = true;
       const { error: uploadError } = await supabase.storage
         .from("polya_documents")
         .upload(storagePath, file, { contentType: file.type || "text/plain" });
-      if (uploadError) throw new Error(uploadError.message);
+      // Thrown as-is (not re-wrapped) so the storage-full check can read it.
+      if (uploadError) throw uploadError;
+      uploading = false;
 
-      const registered = await invokeFunction<{ source_id: string }>("polya-import", {
+      const title = file.name.replace(/\.[^.]+$/, "");
+      await invokeFunction<{ source_id: string }>("polya-import", {
         action: "add_upload",
         course_id: courseId,
         storage_path: storagePath,
-        title: file.name.replace(/\.[^.]+$/, ""),
+        title,
         kind,
       });
 
-      // Pump the single new source to ready.
+      // Registered: the background worker will finish it regardless. Pump a
+      // few steps here so it's usually ready right away, and only say
+      // "ready" when it is.
       let done = false;
-      let guard = 20;
-      while (!done && guard-- > 0) {
-        const result = await invokeFunction<{ done: boolean }>("polya-import", {
-          action: "process",
-          course_id: courseId,
-        });
-        done = result.done;
+      try {
+        let guard = 20;
+        while (!done && guard-- > 0) {
+          const result = await invokeFunction<{ done: boolean }>("polya-import", {
+            action: "process",
+            course_id: courseId,
+          });
+          done = result.done;
+        }
+      } catch (pumpError) {
+        console.warn("[polya] transcript processing continues in the background:", pumpError);
       }
-      setNote(`Added "${file.name}". It's ready to study.`);
-      void registered;
+      if (!done) announceImportStarted();
+      setNote(done ? readyNote(title) : processingNote(title));
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed.");
+      const full = await detectStorageFull(err, { always: uploading });
+      if (full) {
+        setStorageFull(full);
+      } else if (err instanceof FunctionError && err.code === "busy") {
+        setError(AI_BUSY_POLYA_IMPORT_DETAIL);
+      } else {
+        console.error("[polya] transcript upload failed:", err);
+        setError(userMessage(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -113,7 +151,9 @@ export default function TranscriptUpload({ courseId }: Props) {
         ) : null}
       </div>
 
-      {error ? (
+      {storageFull ? (
+        <StorageFullNotice state={storageFull} />
+      ) : error ? (
         <p className="m-0 rounded-lg bg-amber-soft px-3 py-2.5 text-[12.5px] text-amber">
           {error}
         </p>

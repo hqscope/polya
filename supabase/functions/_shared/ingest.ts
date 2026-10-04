@@ -4,6 +4,8 @@ import { chunkPages, splitTextIntoChunks } from "./chunker.ts";
 import type { PageText } from "./chunker.ts";
 import { embedTexts, toVectorLiteral } from "./embeddings.ts";
 import { service, STORAGE_BUCKET } from "./service.ts";
+import { chargeEmbeddingBudget } from "./import-caps.ts";
+import { assertStorageRoom } from "./storage-quota.ts";
 
 export interface SourceRow {
   id: string;
@@ -52,10 +54,9 @@ export async function embedAndInsertChunks(
 ): Promise<number> {
   if (chunks.length === 0) return 0;
 
-  const embedded = await embedTexts(
-    chunks.map((chunk) => chunk.text),
-    "RETRIEVAL_DOCUMENT",
-  );
+  const texts = chunks.map((chunk) => chunk.text);
+  await chargeEmbeddingBudget(service, source.user_id, texts);
+  const embedded = await embedTexts(texts, "RETRIEVAL_DOCUMENT");
 
   const rows: UnitInsert[] = chunks.map((chunk, i) => ({
     user_id: source.user_id,
@@ -87,11 +88,16 @@ export async function downloadFromStorage(storagePath: string): Promise<ArrayBuf
   return await data.arrayBuffer();
 }
 
+// Service-role write, so it checks the owner's storage quota first (4.3):
+// throws StorageFullError (over quota and not an overwrite) or
+// StorageCheckUnavailableError (retryable) before any bytes are sent.
 export async function uploadToStorage(
+  userId: string,
   storagePath: string,
   bytes: ArrayBuffer | Uint8Array,
   contentType: string,
 ): Promise<void> {
+  await assertStorageRoom(service, userId, STORAGE_BUCKET, storagePath);
   const { error } = await service.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, bytes, { contentType, upsert: true });

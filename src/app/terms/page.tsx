@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import ProsePage from "@/components/marketing/ProsePage";
-import { contactEmail, defaultOpenGraph } from "@/lib/seo";
+import { contactEmail, defaultOpenGraph, orgName } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Terms",
@@ -15,7 +15,7 @@ export default function TermsPage() {
   return (
     <ProsePage title="Terms of service" updated="July 17, 2026">
       <p>
-        These terms govern your use of Polya, a service of Canvascope Inc. By
+        These terms govern your use of Polya, a service of {orgName}. By
         signing in, you agree to them.
       </p>
 
@@ -60,7 +60,7 @@ export default function TermsPage() {
       <h2>Disclaimers</h2>
       <p>
         Polya is provided &quot;as is.&quot; To the fullest extent the law
-        allows, Canvascope Inc. disclaims warranties and limits its liability
+        allows, {orgName} disclaims warranties and limits its liability
         arising from your use of the service.
       </p>
 

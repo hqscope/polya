@@ -34,6 +34,13 @@ enabled = true
 site_url = "http://localhost:3000"
 additional_redirect_urls = ["http://localhost:3000/auth/callback"]
 
+# OAuth 2.1 server for the ChatGPT / Claude connector (local mirror of the
+# dashboard setting). Consent happens on Polya's /app/authorize page.
+[auth.oauth_server]
+enabled = true
+authorization_url_path = "/app/authorize"
+allow_dynamic_registration = true
+
 [auth.email]
 enable_signup = true
 enable_confirmations = false

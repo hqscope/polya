@@ -1,5 +1,6 @@
 import { getSupabaseFunctionsUrl } from "@/lib/supabase/config";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import { POLYA_ERROR_GENERIC, POLYA_ERROR_SIGNED_OUT } from "@/lib/user-message";
 
 export class FunctionError extends Error {
   code: string;
@@ -19,7 +20,7 @@ async function authHeader(): Promise<string> {
     data: { session },
   } = await supabase.auth.getSession();
   if (!session?.access_token) {
-    throw new FunctionError("You're signed out. Please sign in again.", "signed_out", 401);
+    throw new FunctionError(POLYA_ERROR_SIGNED_OUT, "signed_out", 401);
   }
   return `Bearer ${session.access_token}`;
 }
@@ -43,7 +44,8 @@ export async function invokeFunction<T>(
   const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
     throw new FunctionError(
-      typeof data.error === "string" ? data.error : "Something went wrong.",
+      // No readable body (a gateway page, a crash): fixed copy, never the raw reply.
+      typeof data.error === "string" ? data.error : POLYA_ERROR_GENERIC,
       typeof data.code === "string" ? data.code : "internal",
       response.status,
     );

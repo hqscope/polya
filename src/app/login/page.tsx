@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import Logo from "@/components/Logo";
+import { sanitizeNextPath } from "@/lib/auth/next-path";
 import { defaultOpenGraph } from "@/lib/seo";
 
 export const metadata: Metadata = {
@@ -40,11 +41,11 @@ export default async function LoginPage({
   searchParams: Promise<{ next?: string; error?: string }>;
 }) {
   const params = await searchParams;
-  const nextPath = params.next ?? "/app";
+  const nextPath = sanitizeNextPath(params.next);
   const hadError = Boolean(params.error);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center px-6 py-10">
+    <main className="flex min-h-screen flex-col items-center justify-center px-6 py-10">
       <div className="flex w-full max-w-[380px] flex-col gap-5">
         <Logo />
 
@@ -75,6 +76,6 @@ export default async function LoginPage({
           study.
         </p>
       </div>
-    </div>
+    </main>
   );
 }

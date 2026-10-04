@@ -9,6 +9,8 @@ import type { TutorSource } from "@/lib/sse";
 interface Props {
   source: TutorSource;
   onBack: () => void;
+  /** The back button's text: the rail goes back to its list, the phone sheet closes. */
+  backLabel?: string;
 }
 
 interface SourceMeta {
@@ -21,7 +23,7 @@ interface SourceMeta {
 // Opens a cited source at its exact location: PDFs render at the cited page via
 // the browser's native viewer (#page=N); pages/transcripts show the stored text
 // scrolled to the cited passage.
-export default function SourcePanel({ source, onBack }: Props) {
+export default function SourcePanel({ source, onBack, backLabel = "← All sources" }: Props) {
   const [meta, setMeta] = useState<SourceMeta | null>(null);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [bodyText, setBodyText] = useState<string | null>(null);
@@ -80,9 +82,9 @@ export default function SourcePanel({ source, onBack }: Props) {
         <button
           type="button"
           onClick={onBack}
-          className="cursor-pointer text-[12px] font-medium text-ink3 hover:text-ink"
+          className="cursor-pointer py-2.5 pr-3 text-[12px] font-medium text-ink3 hover:text-ink"
         >
-          ← All sources
+          {backLabel}
         </button>
       </div>
 

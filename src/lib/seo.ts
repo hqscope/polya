@@ -18,8 +18,13 @@ export const siteUrl =
   normalizeSiteUrl(process.env.NEXT_PUBLIC_SITE_URL) || "https://askpolya.com";
 
 export const siteName = "Polya";
+// Legal entity name: keep as registered until Noel confirms a rename (POLISH Needs Noel).
 export const orgName = "Canvascope Inc.";
 export const contactEmail = "hello@askpolya.com";
+
+// Scope's own marketing site — Polya is one of its products, not a separate
+// brand, so the footer links back to it.
+export const SCOPE_SITE_URL = "https://www.canvascope.org";
 
 export const siteDescription =
   "Polya is an AI tutor that knows your courses and walks you through the work — hints, steps, and explanations that build understanding instead of handing you answers.";

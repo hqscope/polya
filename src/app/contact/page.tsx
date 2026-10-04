@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 
 import ProsePage from "@/components/marketing/ProsePage";
-import { contactEmail, defaultOpenGraph } from "@/lib/seo";
+import { contactEmail, defaultOpenGraph, orgName } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Contact",
-  description: "Get in touch with the Polya team at Canvascope Inc.",
+  description: `Get in touch with the Polya team at ${orgName}.`,
   alternates: { canonical: "/contact" },
   openGraph: { ...defaultOpenGraph, url: "/contact" },
 };

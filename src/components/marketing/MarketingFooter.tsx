@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import Logo from "@/components/Logo";
+import { orgName, SCOPE_SITE_URL } from "@/lib/seo";
 
 const FOOTER_LINKS = [
   { href: "/how-it-works", label: "How it works" },
@@ -8,6 +9,7 @@ const FOOTER_LINKS = [
   { href: "/privacy", label: "Privacy" },
   { href: "/terms", label: "Terms" },
   { href: "/contact", label: "Contact" },
+  { href: SCOPE_SITE_URL, label: "Scope" },
 ];
 
 export default function MarketingFooter() {
@@ -32,7 +34,7 @@ export default function MarketingFooter() {
           Polya — course-aware AI tutoring for your Canvas classes.
         </span>
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <span className="text-[12px] text-ink3">© 2026 Canvascope Inc.</span>
+          <span className="text-[12px] text-ink3">© 2026 {orgName}</span>
           <span className="text-[12px] text-ink3">
             Named for George Pólya, who taught the world how to solve it.
           </span>

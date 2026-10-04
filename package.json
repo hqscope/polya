@@ -17,12 +17,14 @@
     "seo:indexnow": "node scripts/indexnow-ping.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@supabase/ssr": "^0.9.0",
     "@supabase/supabase-js": "^2.99.1",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

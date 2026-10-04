@@ -7,6 +7,10 @@ page, slide, or lecture moment it came from. Instructors set the assistance leve
 
 Named for George Pólya, whose *How to Solve It* taught teaching-by-questions.
 
+Polya is the AI layer of **Scope**, the course workspace — the sanctioned tutor whose pedagogy a
+faculty can govern. Company direction: `../scope-docs/ROADMAP.md`. Free for students; revenue is
+institutional.
+
 ## Develop
 
 ```sh

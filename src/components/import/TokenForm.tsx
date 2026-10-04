@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { invokeFunction } from "@/lib/functions";
+import { userMessage } from "@/lib/user-message";
 import type { CanvasCourseOption } from "@/lib/types";
 
 interface Props {
@@ -31,7 +32,8 @@ export default function TokenForm({ onConnected }: Props) {
       });
       onConnected(connect.connection_id, courses.courses);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't connect to Canvas.");
+      console.error("[polya] Canvas connect failed:", err);
+      setError(userMessage(err));
     } finally {
       setBusy(false);
     }
@@ -40,10 +42,11 @@ export default function TokenForm({ onConnected }: Props) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <label className="text-[12.5px] font-semibold">
+        <label htmlFor="canvas-base-url" className="text-[12.5px] font-semibold">
           Your school&apos;s Canvas web address
         </label>
         <input
+          id="canvas-base-url"
           type="url"
           required
           value={baseUrl}
@@ -54,8 +57,11 @@ export default function TokenForm({ onConnected }: Props) {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[12.5px] font-semibold">Canvas access token</label>
+        <label htmlFor="canvas-access-token" className="text-[12.5px] font-semibold">
+          Canvas access token
+        </label>
         <input
+          id="canvas-access-token"
           type="password"
           required
           value={token}

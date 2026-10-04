@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { getAuthenticatedAppUser } from "@/lib/auth/session";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import {
   sourceKindBadge,
   sourceStatusClass,
@@ -16,15 +17,22 @@ export const metadata = { title: "Course materials" };
 type Mode = "open" | "guided" | "practice" | "review";
 
 export default async function MaterialsPage({ params }: { params: Promise<{ id: string }> }) {
-  const { user, supabase } = await getAuthenticatedAppUser();
+  const { user, supabase, outage } = await getAuthenticatedAppUser();
+  if (outage) {
+    throw new Error("auth-outage");
+  }
   if (!user) {
-    redirect("/login?next=/app");
+    return redirectToLogin();
   }
   const { id } = await params;
 
   const [{ data: course }, { data: sources }, { data: policy }, { data: checks }] =
     await Promise.all([
-      supabase.from("polya_courses").select("name, canvas_course_id").eq("id", id).maybeSingle(),
+      supabase
+        .from("polya_courses")
+        .select("name, canvas_course_id, connection_id")
+        .eq("id", id)
+        .maybeSingle(),
       supabase
         .from("polya_sources")
         .select("id, title, origin, source_kind, status, chunks_embedded")
@@ -57,7 +65,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-[640px] flex-col gap-7 px-8 pt-9 pb-14">
+      <div className="mx-auto flex max-w-[640px] flex-col gap-7 px-5 pt-9 pb-14 sm:px-8">
         <div className="flex flex-col gap-[7px] border-b border-line pb-[18px]">
           <Link
             href={`/app/courses/${id}`}
@@ -120,8 +128,8 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
             {course.canvas_course_id &&
             !String(course.canvas_course_id).startsWith("fixture-") ? (
               <RefreshMaterials
-                courseId={id}
                 canvasCourseId={String(course.canvas_course_id)}
+                connectionId={(course.connection_id as string | null) ?? null}
               />
             ) : null}
           </div>

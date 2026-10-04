@@ -2,6 +2,7 @@
 // content_units, plus their sidecar rows (polya_procedures / _steps).
 import { embedTexts, toVectorLiteral } from "./embeddings.ts";
 import { service } from "./service.ts";
+import { chargeEmbeddingBudget } from "./import-caps.ts";
 import type { SourceRow } from "./ingest.ts";
 import {
   procedureText,
@@ -18,6 +19,17 @@ export async function embedAndInsertProcedures(
   ordinalStart: number,
 ): Promise<number> {
   if (procedures.length === 0) return 0;
+
+  // Charged before the sidecar inserts, so a busy budget can't leave
+  // procedure rows behind for the retry to duplicate.
+  await chargeEmbeddingBudget(
+    service,
+    source.user_id,
+    procedures.flatMap((procedure) => [
+      procedureText(procedure),
+      ...procedure.steps.map((step) => stepText(procedure, step)),
+    ]),
+  );
 
   let ordinal = ordinalStart;
   const unitRows: Array<Record<string, unknown>> = [];
@@ -109,10 +121,9 @@ export async function embedAndInsertTranscript(
 ): Promise<number> {
   if (segments.length === 0) return 0;
 
-  const embedded = await embedTexts(
-    segments.map((segment) => segment.text),
-    "RETRIEVAL_DOCUMENT",
-  );
+  const texts = segments.map((segment) => segment.text);
+  await chargeEmbeddingBudget(service, source.user_id, texts);
+  const embedded = await embedTexts(texts, "RETRIEVAL_DOCUMENT");
 
   const rows = segments.map((segment, i) => ({
     user_id: source.user_id,

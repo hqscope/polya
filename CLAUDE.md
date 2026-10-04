@@ -8,7 +8,7 @@ never a bare answer dump. See `docs/ARCHITECTURE.md` (system design) and `docs/P
 ## Stack & commands
 
 - Next.js 16 / React 19 / strict TypeScript / Tailwind 4 / `@supabase/ssr`; npm (no monorepo tooling).
-- Backend = the **shared** Canvascope Supabase project `vcadcdgnwxjlgaoqktkd`: `polya_`-prefixed
+- Backend = the **shared** Scope Supabase project `vcadcdgnwxjlgaoqktkd`: `polya_`-prefixed
   tables in `public`, Deno/TS edge functions in `supabase/functions/`, storage bucket `polya_documents`.
 - `npm run dev` (webpack) · `lint` · `typecheck` · `test` (Node 22.6+ native TS test runner over
   `tests/`) · `eval` (retrieval recall) · `seed:fixture`.

@@ -15,12 +15,15 @@ export const admin = createClient(supabaseUrl, serviceRoleKey, {
   },
 });
 
-export const DAILY_TUTOR_LIMIT = 300;
+export const DAILY_TUTOR_LIMIT = 100;
 
 export type UsageResult = {
   allowed: boolean;
   used: number;
   limit: number;
+  // True when the meter itself couldn't be read, as opposed to the student
+  // being over the limit. Callers show "try again" rather than "limit reached".
+  unavailable: boolean;
 };
 
 // UTC day key (YYYY-MM-DD) — meter windows roll over at UTC midnight.
@@ -29,21 +32,32 @@ export function utcDay(date: Date = new Date()): string {
 }
 
 // Atomically increment today's tutor counter and report whether this request
-// is within the limit. Fail-open: a metering error never blocks the student.
+// is within the limit. Fail-closed: if the meter can't be read the request is
+// refused, so an outage in metering can never turn into unmetered model spend.
 export async function checkAndCountTutorUsage(
   userId: string,
   limit: number = DAILY_TUTOR_LIMIT,
 ): Promise<UsageResult> {
-  const { data, error } = await admin.rpc("polya_increment_usage", {
-    p_user_id: userId,
-    p_day: utcDay(),
-  });
-
-  if (error) {
-    console.error("[polya-usage] polya_increment_usage failed:", error.message);
-    return { allowed: true, used: 0, limit };
+  let data: unknown;
+  try {
+    const result = await admin.rpc("polya_increment_usage", {
+      p_user_id: userId,
+      p_day: utcDay(),
+    });
+    if (result.error) {
+      console.error("[polya-usage] polya_increment_usage failed:", result.error.message);
+      return { allowed: false, used: 0, limit, unavailable: true };
+    }
+    data = result.data;
+  } catch (error) {
+    console.error("[polya-usage] polya_increment_usage threw:", error);
+    return { allowed: false, used: 0, limit, unavailable: true };
   }
 
-  const used = Number(data ?? 0);
-  return { allowed: used <= limit, used, limit };
+  const used = Number(data);
+  if (data === null || data === undefined || !Number.isFinite(used)) {
+    console.error("[polya-usage] polya_increment_usage returned no count");
+    return { allowed: false, used: 0, limit, unavailable: true };
+  }
+  return { allowed: used <= limit, used, limit, unavailable: false };
 }

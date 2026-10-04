@@ -4,7 +4,8 @@ import {
   copyResponseCookies,
   createRouteHandlerSupabaseClient,
 } from "@/lib/supabase/server";
-import { resolveAuthCallbackBaseUrl, sanitizeNextPath } from "@/lib/site";
+import { resolveAuthCallbackBaseUrl } from "@/lib/site";
+import { sanitizeNextPath } from "@/lib/auth/next-path";
 
 function getCallbackUrl(request: NextRequest, nextPath: string): string {
   const baseUrl = resolveAuthCallbackBaseUrl(request.nextUrl.origin);

@@ -3,6 +3,7 @@
 // return whether more work remains. Sources with a pre-set storage_path
 // (fixtures, uploaded transcripts) skip the Canvas fetch.
 import { service } from "./service.ts";
+import { CONNECTIONS_TABLE } from "./connections.ts";
 import { transientBackoffMs, type TransientHint } from "./backoff.ts";
 import { trackServer } from "./events.ts";
 import {
@@ -26,6 +27,8 @@ import { extractPageRange, getPdfInfo } from "./pdf.ts";
 import type { PageText } from "./chunker.ts";
 import { ocrEnabled, ocrPdfPages } from "./ocr.ts";
 import { GeminiTransientError } from "./embeddings.ts";
+import { chargeImportUnits } from "./import-caps.ts";
+import { STORAGE_FULL_MESSAGE, StorageFullError } from "./storage-quota.ts";
 import {
   fetchBestTranscript,
   getMediaEntry,
@@ -130,13 +133,20 @@ export async function advanceClaimedSource(
     if (err instanceof CanvasAuthError) {
       if (connection) {
         await service
-          .from("polya_canvas_connections")
+          .from(CONNECTIONS_TABLE)
           .update({ status: "invalid" })
           .eq("user_id", source.user_id)
           .eq("base_url", connection.base_url);
       }
       await failSource(source.id, "Your Canvas access token stopped working.");
       return { done: false, source_id: source.id, status: "failed", canvas_auth: true };
+    }
+
+    // Over the Lectra storage quota (4.3): nothing was stored. Fail the source
+    // with the storage-full message; "retry failed" re-queues it once there's room.
+    if (err instanceof StorageFullError) {
+      await failSource(source.id, STORAGE_FULL_MESSAGE);
+      return { done: false, source_id: source.id, status: "failed" };
     }
 
     const attempts = (source.attempts ?? 0) + 1;
@@ -347,7 +357,7 @@ async function advancePdf(source: SourceRow, connection: Connection | null): Pro
       }
       if (refreshing) await clearSourceOutput(source.id);
       const storagePath = source.storage_path ?? storageKeyFor(source, "pdf");
-      await uploadToStorage(storagePath, bytes, "application/pdf");
+      await uploadToStorage(source.user_id, storagePath, bytes, "application/pdf");
       const info = await getPdfInfo(bytes);
       await service
         .from("polya_sources")
@@ -397,11 +407,18 @@ async function advancePdf(source: SourceRow, connection: Connection | null): Pro
 
   // status === "parsing" — extract this page batch's text layer (unpdf), then
   // OCR any image-only pages in the batch and merge them in before chunking.
+  // Both are metered per user per day before the work runs (import-caps.ts);
+  // over a cap, the source waits for the daily reset instead of failing.
+  const batchPages = Math.max(1, Math.min(PARSE_PAGE_BATCH, (source.page_count ?? 0) - source.pages_parsed));
+  await chargeImportUnits(service, source.user_id, "pages", batchPages);
   const bytes = await downloadFromStorage(source.storage_path!);
   const range = await extractPageRange(bytes, source.pages_parsed + 1, PARSE_PAGE_BATCH);
 
   let pages = range.pages;
   if (range.emptyPages.length > 0 && ocrEnabled()) {
+    // Outside the try below: a cap error must re-queue the batch, not be
+    // swallowed as a permanent OCR failure (which would drop these pages).
+    await chargeImportUnits(service, source.user_id, "ocr", range.emptyPages.length);
     try {
       const ocrPages = await ocrPdfPages(bytes, range.emptyPages);
       pages = mergePages(range.pages, ocrPages);
@@ -631,7 +648,7 @@ async function advanceMediaFetch(
 
   const ext = TRANSCRIPT_EXT[transcript.kind] ?? "txt";
   const storagePath = source.storage_path ?? storageKeyFor(source, ext);
-  await uploadToStorage(storagePath, transcript.bytes, "text/plain; charset=utf-8");
+  await uploadToStorage(source.user_id, storagePath, transcript.bytes, "text/plain; charset=utf-8");
   await service
     .from("polya_sources")
     .update({

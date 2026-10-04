@@ -60,18 +60,23 @@ export async function retrieve(
   );
   const evidence = dedupeBySignature(fused).slice(0, EVIDENCE_MAX);
 
-  return await expand(userClient, courseId, evidence);
+  return await expand(userClient, courseId, evidence, excludeRoles);
 }
 
 // Expand the fused hits: pull ±1 ordinal neighbors (same source) and, for a
-// procedure_step hit, its parent procedure + all sibling steps.
+// procedure_step hit, its parent procedure + all sibling steps. Expansions
+// honor `excludeRoles` too: a solution key sitting next to a material hit must
+// not ride in as a neighbor in practice mode.
 async function expand(
   userClient: SupabaseClient,
   courseId: string,
   hits: RetrievedUnit[],
+  excludeRoles: string[],
 ): Promise<RetrievedUnit[]> {
   const byId = new Map<string, RetrievedUnit>();
   for (const hit of hits) byId.set(hit.unit_id, hit);
+  const excluded = new Set(excludeRoles);
+  const keep = (row: RetrievedUnit) => !byId.has(row.unit_id) && !excluded.has(row.content_role);
 
   const neighborKeys: Array<{ source_id: string; ordinal: number }> = [];
   const procedureIds = new Set<string>();
@@ -93,7 +98,7 @@ async function expand(
       .eq("course_id", courseId)
       .or(orFilter);
     for (const row of (data ?? []) as unknown as RetrievedUnit[]) {
-      if (!byId.has(row.unit_id)) byId.set(row.unit_id, { ...row, score: 0 });
+      if (keep(row)) byId.set(row.unit_id, { ...row, score: 0 });
     }
   }
 
@@ -105,7 +110,7 @@ async function expand(
       .eq("course_id", courseId)
       .in("procedure_id", Array.from(procedureIds));
     for (const row of (data ?? []) as unknown as RetrievedUnit[]) {
-      if (!byId.has(row.unit_id)) byId.set(row.unit_id, { ...row, score: 0 });
+      if (keep(row)) byId.set(row.unit_id, { ...row, score: 0 });
     }
   }
 

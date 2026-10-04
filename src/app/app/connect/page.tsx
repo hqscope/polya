@@ -1,19 +1,22 @@
-import { redirect } from "next/navigation";
 
 import { getAuthenticatedAppUser } from "@/lib/auth/session";
+import { redirectToLogin } from "@/lib/auth/login-redirect";
 import ConnectFlow from "@/components/import/ConnectFlow";
 
 export const metadata = { title: "Connect Canvas" };
 
 export default async function ConnectPage() {
-  const { user } = await getAuthenticatedAppUser();
+  const { user, outage } = await getAuthenticatedAppUser();
+  if (outage) {
+    throw new Error("auth-outage");
+  }
   if (!user) {
-    redirect("/login?next=/app/connect");
+    return redirectToLogin();
   }
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-[560px] flex-col gap-6 px-8 pt-10 pb-14">
+      <div className="mx-auto flex max-w-[560px] flex-col gap-6 px-5 pt-10 pb-14 sm:px-8">
         <div className="flex flex-col gap-1.5 border-b border-line pb-[18px]">
           <h1 className="text-[21px]">Connect your Canvas</h1>
           <p className="m-0 text-[13px] leading-[1.65] text-ink2">

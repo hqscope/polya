@@ -200,3 +200,14 @@
     border-top: 1px solid var(--line);
   }
 }
+
+/* Phones zoom the whole page when a text field under 16px gets focus. Below
+   `md` (where the top bar replaces the sidebar), text fields render at 16px.
+   Unlayered on purpose so it wins over the size utilities on each field. */
+@media (max-width: 47.99rem) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

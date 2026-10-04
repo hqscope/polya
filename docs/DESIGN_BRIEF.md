@@ -145,7 +145,7 @@ passages" feature).
 
 ## 6. Sign-in & production note (affects whether the deployed site works)
 
-Auth is Google OAuth via Supabase (project `vcadcdgnwxjlgaoqktkd`, shared with the Canvascope
+Auth is Google OAuth via Supabase (project `vcadcdgnwxjlgaoqktkd`, shared with the Scope
 extension). For **askpolya.com** to sign users in, the domain's callback
 (`https://askpolya.com/auth/callback`) must be in Supabase Auth's redirect allow-list **and** the
 Google OAuth client's authorized redirect URIs, and `NEXT_PUBLIC_SITE_URL=https://askpolya.com`

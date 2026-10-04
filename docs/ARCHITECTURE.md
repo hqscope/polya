@@ -1,6 +1,6 @@
 # Polya — architecture (v1)
 
-One product, three moving parts: a Next.js app (UI + auth), the shared Canvascope Supabase project
+One product, three moving parts: a Next.js app (UI + auth), the shared Scope Supabase project
 (data + storage + edge functions), and two external APIs (the student's Canvas, and the model
 providers reached only from edge functions).
 

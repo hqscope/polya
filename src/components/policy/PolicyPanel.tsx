@@ -4,6 +4,9 @@ import { useState } from "react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
+// `polya.policy.saveFailed`
+const SAVE_FAILED = "Couldn't save. Try again.";
+
 type Mode = "open" | "guided" | "practice" | "review";
 
 const MODES: Array<{ mode: Mode; label: string; blurb: string }> = [
@@ -39,24 +42,41 @@ export default function PolicyPanel({ courseId, initialMode, initialNote }: Prop
   const [note, setNote] = useState(initialNote ?? "");
   const [savedMode, setSavedMode] = useState<Mode>(initialMode);
   const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
 
+  // A failed save puts the mode back to the last one that stuck (the note keeps
+  // what was typed, so it isn't lost) and says so.
   async function save(nextMode: Mode, nextNote: string) {
+    const previousMode = savedMode;
     setSaving(true);
-    const supabase = createBrowserSupabaseClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (user) {
-      await supabase.from("polya_course_policies").upsert(
-        {
-          course_id: courseId,
-          user_id: user.id,
-          mode: nextMode,
-          instructor_note: nextNote.trim() || null,
-        },
-        { onConflict: "course_id" },
-      );
+    setSaveFailed(false);
+    let saved = false;
+    try {
+      const supabase = createBrowserSupabaseClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        const { error } = await supabase.from("polya_course_policies").upsert(
+          {
+            course_id: courseId,
+            user_id: user.id,
+            mode: nextMode,
+            instructor_note: nextNote.trim() || null,
+          },
+          { onConflict: "course_id" },
+        );
+        if (error) console.error("[polya] study mode save failed:", error);
+        saved = !error;
+      }
+    } catch (err) {
+      console.error("[polya] study mode save failed:", err);
+    }
+    if (saved) {
       setSavedMode(nextMode);
+    } else {
+      setMode(previousMode);
+      setSaveFailed(true);
     }
     setSaving(false);
   }
@@ -75,6 +95,10 @@ export default function PolicyPanel({ courseId, initialMode, initialNote }: Prop
         {saving ? (
           <span className="ml-auto text-[11.5px] font-semibold text-ink3">
             Saving…
+          </span>
+        ) : saveFailed ? (
+          <span role="status" className="ml-auto text-[11.5px] font-semibold text-amber">
+            {SAVE_FAILED}
           </span>
         ) : savedMode === mode ? (
           <span className="ml-auto text-[11.5px] font-semibold text-accent-ink">
@@ -123,10 +147,11 @@ export default function PolicyPanel({ courseId, initialMode, initialNote }: Prop
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-[12.5px] font-semibold">
+        <label htmlFor="policy-tutor-note" className="text-[12.5px] font-semibold">
           Note to the tutor (optional)
         </label>
         <textarea
+          id="policy-tutor-note"
           value={note}
           onChange={(event) => setNote(event.target.value)}
           onBlur={() => void save(mode, note)}

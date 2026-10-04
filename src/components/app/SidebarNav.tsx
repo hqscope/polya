@@ -3,11 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-export interface SidebarCourse {
-  id: string;
-  name: string;
-  code: string | null;
-}
+import { courseNavLabel, isCoursePath, type NavCourse } from "@/lib/app-nav";
+
+export type SidebarCourse = NavCourse;
 
 function NavItem({
   href,
@@ -21,6 +19,7 @@ function NavItem({
   return (
     <Link
       href={href}
+      aria-current={active ? "page" : undefined}
       className={`shrink-0 truncate rounded-md border px-2.5 py-1.5 text-[13px] leading-[1.45] font-medium ${
         active
           ? "border-line bg-surface text-ink shadow-card"
@@ -56,9 +55,9 @@ export default function SidebarNav({ courses }: { courses: SidebarCourse[] }) {
               <NavItem
                 key={course.id}
                 href={`/app/courses/${course.id}`}
-                active={pathname.startsWith(`/app/courses/${course.id}`)}
+                active={isCoursePath(pathname, course.id)}
               >
-                {course.code ? `${course.code} · ${course.name}` : course.name}
+                {courseNavLabel(course)}
               </NavItem>
             ))}
           </nav>

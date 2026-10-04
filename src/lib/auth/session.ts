@@ -1,6 +1,7 @@
 import { cache } from "react";
 
 import { createServerSupabaseClient } from "@/lib/supabase/server-component";
+import { isAuthOutage } from "@/lib/auth/outage";
 
 export interface AuthenticatedAppUser {
   id: string;
@@ -16,8 +17,25 @@ export const getAuthenticatedAppUser = cache(async () => {
     error,
   } = await supabase.auth.getUser();
 
+  // A 5xx, a 402 (over quota) or a network failure means we couldn't confirm
+  // the session either way — that's an outage, not a sign-out. Callers must
+  // show a retry notice instead of redirecting to /login.
+  if (isAuthOutage(error)) {
+    return {
+      supabase,
+      user: null as AuthenticatedAppUser | null,
+      error,
+      outage: true as const,
+    };
+  }
+
   if (error || !user) {
-    return { supabase, user: null as AuthenticatedAppUser | null, error };
+    return {
+      supabase,
+      user: null as AuthenticatedAppUser | null,
+      error,
+      outage: false as const,
+    };
   }
 
   const metadata = user.user_metadata ?? {};
@@ -39,5 +57,6 @@ export const getAuthenticatedAppUser = cache(async () => {
       avatarUrl,
     },
     error: null,
+    outage: false as const,
   };
 });

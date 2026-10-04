@@ -30,19 +30,32 @@ readings, slides, pages, lecture transcripts — then helps the way a great tuto
   layer we add once course-level adoption is proven. That is the campus story: a sanctioned AI
   whose pedagogy the faculty can govern.
 
-## Why now, why us
+## Where Polya sits in Scope
+
+Scope is building **the LMS where students actually do the work** (see
+`../../scope-docs/ROADMAP.md`). Polya is the AI layer of that course workspace — the part a
+faculty can govern.
 
 Foundation models made answers abundant; understanding is still scarce. The defensible layer is not
-the model — it's the **course context and instructional policy** between models and students.
-Canvascope's extension already gives us live LMS access patterns and distribution; Lectra gives us
-the document workspace; Polya is the product that ties them into one story.
+the model — it's the **course context and instructional policy** between models and students. The
+Scope extension gives us live LMS access patterns and distribution; Lectra gives us the document
+workspace where the work happens; Polya is the tutor that knows what the course actually taught.
+
+That has a consequence worth stating plainly: **Polya's instructor policy controls belong to the
+same instructor layer as grading, rubrics, and roster sync.** They are not a separate product
+surface, and the seam between "Polya the standalone site" and "the tutor inside the course" is an
+open design decision (`../../scope-docs/MASTER_PLAN.md` WS-7).
 
 ## Motion
 
-Student-first (self-serve, free tier + Pro), building course-level density that creates the
-institutional pull: professor notices → policy controls → departmental pilot in gateway STEM
-courses → campus license ("Polya Campus": every student gets it, faculty keep learning in the
-loop). We never promise to block other AI tools — we promise the sanctioned option is *better for
+Student-first and **free** — build course-level density, which creates the institutional pull:
+professor notices → policy controls → departmental pilot in gateway STEM courses → campus license
+("Polya Campus": every student gets it, faculty keep learning in the loop).
+
+Revenue is institution-led only. There is no self-serve paid tier and no Pro plan — do not write
+copy that implies one. Consumer tiers were removed across the company on 2026-07-24.
+
+We never promise to block other AI tools — we promise the sanctioned option is *better for
 coursework* because it starts from the course itself.
 
 ## Lines that work
