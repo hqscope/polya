@@ -48,6 +48,7 @@ test("rules result reports the mode and leaves assignment rules empty for now", 
   assert.equal(result.label, "Practice");
   assert.ok(result.not_allowed.length > 0);
   assert.deepEqual(result.assignment_rules, []);
+  assert.ok(result.how_to_help.length >= 3);
   assert.ok(result.open_in_polya.endsWith(`/app/courses/${course.id}`));
 });
 

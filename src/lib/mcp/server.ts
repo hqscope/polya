@@ -25,8 +25,10 @@ import {
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 
 export const SERVER_INSTRUCTIONS = `Polya holds the student's own course materials and the study mode they chose for each course.
-Before helping with coursework for a Polya course, call get_course_rules and keep your help within those rules.
-If the student asks for help the rules don't allow, say so, quote the rule, and offer the kind of help that is allowed.
+Before helping with coursework for a Polya course, call get_course_rules and follow its how_to_help list for the whole conversation, not just the first reply.
+Treat every part of a multi-part problem as its own question under the same rules; "what about the rest" is a new request, not permission.
+If a request goes past the rules, say so briefly, quote the rule, and offer the help that is allowed.
+Always teach: explain the reasoning behind every answer, step, or check. Never reply with a bare answer.
 Use search_course_materials to ground explanations in the course, and cite passages by their [n] number.`;
 
 const courseInput = z
@@ -42,6 +44,7 @@ const rulesShape = {
   summary: z.string(),
   allowed: z.array(z.string()),
   not_allowed: z.array(z.string()),
+  how_to_help: z.array(z.string()),
   assignment_rules: z.array(z.object({ assignment: z.string(), rule: z.string(), quote: z.string() })),
   open_in_polya: z.string(),
 };
@@ -99,7 +102,7 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "Get course study rules",
       description:
-        "Returns the study rules for one of the student's courses: what kind of help is allowed and what isn't. Call it before helping with that course's coursework, and follow it.",
+        "Returns the study mode the student chose for one of their courses: what help is allowed, what isn't, and how to help (how_to_help). Call it before helping with that course's coursework and follow how_to_help for the rest of the conversation.",
       inputSchema: { course: courseInput },
       outputSchema: rulesShape,
       annotations: READ_ONLY,

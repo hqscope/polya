@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   excludedRolesFor,
   normalizeMode,
+  rulesReminder,
   studyRulesFor,
 } from "../supabase/functions/_shared/study-rules.ts";
 
@@ -28,4 +29,19 @@ test("every mode has a label and summary; restrictive modes say what is off limi
   }
   assert.ok(studyRulesFor("guided").not_allowed.length > 0);
   assert.ok(studyRulesFor("practice").not_allowed.length > 0);
+});
+
+test("every mode tells the assistant to explain, never a bare answer", () => {
+  for (const mode of ["open", "guided", "practice", "review"] as const) {
+    assert.ok(studyRulesFor(mode).how_to_help.some((line) => /never reply with a bare answer/i.test(line)));
+    assert.match(rulesReminder(mode), /never give a bare answer/i);
+  }
+});
+
+test("guided and practice treat each part of a problem as its own question", () => {
+  for (const mode of ["guided", "practice"] as const) {
+    assert.ok(studyRulesFor(mode).how_to_help.some((line) => line.includes("what about the rest")));
+    assert.match(rulesReminder(mode), /each part of a problem/i);
+  }
+  assert.ok(studyRulesFor("practice").how_to_help.some((line) => /yes\/no question/.test(line)));
 });

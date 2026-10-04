@@ -4,7 +4,7 @@
 //
 // Pure: Node tests import this file.
 import { siteUrl } from "../seo.ts";
-import { studyRulesFor } from "../../../supabase/functions/_shared/study-rules.ts";
+import { rulesReminder, studyRulesFor } from "../../../supabase/functions/_shared/study-rules.ts";
 import type { PolicyMode } from "../../../supabase/functions/_shared/prompts.ts";
 import type { CourseRow, SearchHit } from "./data.ts";
 
@@ -23,6 +23,7 @@ export interface RulesResult {
   summary: string;
   allowed: string[];
   not_allowed: string[];
+  how_to_help: string[];
   assignment_rules: Array<{ assignment: string; rule: string; quote: string }>;
   open_in_polya: string;
 }
@@ -64,6 +65,7 @@ export function toRulesResult(course: CourseRow, mode: PolicyMode): RulesResult 
     summary: rules.summary,
     allowed: rules.allowed,
     not_allowed: rules.not_allowed,
+    how_to_help: rules.how_to_help,
     assignment_rules: [],
     open_in_polya: courseUrl(course.id),
   };
@@ -98,7 +100,7 @@ export function toSearchResult(
 ): SearchResult {
   return {
     course_name: course.name,
-    rules_summary: `${studyRulesFor(mode).label} mode: ${studyRulesFor(mode).summary}`,
+    rules_summary: rulesReminder(mode),
     passages: hits.map((hit) => ({
       n: hit.n,
       title: hit.title,
@@ -114,6 +116,7 @@ export function rulesText(result: RulesResult): string {
   const lines = [`${result.course_name}: ${result.label} mode. ${result.summary}`];
   if (result.allowed.length) lines.push(`Allowed: ${result.allowed.join("; ")}.`);
   if (result.not_allowed.length) lines.push(`Not allowed: ${result.not_allowed.join("; ")}.`);
+  lines.push(`How to help:\n${result.how_to_help.map((item) => `- ${item}`).join("\n")}`);
   return lines.join("\n");
 }
 

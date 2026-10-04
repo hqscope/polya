@@ -11,7 +11,20 @@ export interface StudyRules {
   summary: string;
   allowed: string[];
   not_allowed: string[];
+  /** Concrete instructions for the assistant, repeated in every tool result. */
+  how_to_help: string[];
 }
+
+// Every mode teaches. A bare result ("acceleration is 0") is not help in any
+// mode; the reasoning is the point.
+const EXPLAIN_EVERY_TIME =
+  "Explain the reasoning every time: name the course concept, show how it applies to this exact case step by step, and end with a quick check the student can reuse. Never reply with a bare answer.";
+
+// The connector test (2026-10-03) showed the outside model holding the line on
+// the first ask, then answering "what about the rest" outright. Each part of a
+// multi-part problem is its own question.
+const EACH_PART =
+  "Treat every part of a multi-part problem (1a, 1b, each segment of a graph) as its own question. A follow-up like \"what about the rest\" or \"and the next one?\" is a new request under the same rules, not permission to answer.";
 
 const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
   open: {
@@ -19,6 +32,10 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
     summary: "Full answers and walkthroughs are fine when the student asks for them.",
     allowed: ["Full answers and worked solutions on request", "Explaining any concept from the course"],
     not_allowed: [],
+    how_to_help: [
+      "Give the full answer or worked solution when asked.",
+      EXPLAIN_EVERY_TIME,
+    ],
   },
   guided: {
     label: "Guided",
@@ -30,6 +47,12 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
       "A worked example of a similar (not the same) problem",
     ],
     not_allowed: ["A full solution to a problem before the student has shown their own attempt"],
+    how_to_help: [
+      "On a problem, start with a guiding question or a hint that points at the right concept, and climb one step at a time as the student engages.",
+      "Once the student has shown their own attempt at a part, you may walk through that part fully.",
+      EACH_PART,
+      EXPLAIN_EVERY_TIME,
+    ],
   },
   practice: {
     label: "Practice",
@@ -41,12 +64,24 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
       "More than one guided step at a time",
       "Using answer keys or posted solutions",
     ],
+    how_to_help: [
+      "Before confirming or explaining any part, ask for the student's own answer to that part. A yes/no question from the student (\"is it accelerating?\") gets a question back (\"what does the slope tell you?\"), not the answer.",
+      "After the student commits, say whether it's right, then explain why using the course concept, and correct any misconception.",
+      "Give at most one guided step at a time when they're stuck.",
+      EACH_PART,
+      EXPLAIN_EVERY_TIME,
+    ],
   },
   review: {
     label: "Review",
     summary: "After the deadline. Full worked solutions are fine, ideally followed by a related practice task.",
     allowed: ["Full worked solutions", "Suggesting a related practice task"],
     not_allowed: [],
+    how_to_help: [
+      "Give full worked solutions, with the reasoning at every step.",
+      "End with one related practice task the student can try.",
+      EXPLAIN_EVERY_TIME,
+    ],
   },
 };
 
@@ -59,6 +94,13 @@ export function normalizeMode(raw: string | null | undefined): PolicyMode {
 
 export function studyRulesFor(mode: PolicyMode): StudyRules {
   return { mode, ...RULES[mode] };
+}
+
+/** One line for the top of every search result, so the rule stays in view. */
+export function rulesReminder(mode: PolicyMode): string {
+  const rules = RULES[mode];
+  const partRule = mode === "guided" || mode === "practice" ? " Each part of a problem is its own question." : "";
+  return `${rules.label} mode: ${rules.summary}${partRule} Explain the reasoning; never give a bare answer.`;
 }
 
 /** Content roles withheld from retrieval under a mode (practice hides solution keys). */
