@@ -18,8 +18,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // signed in to the account (Lectra included).
   await supabase.auth.signOut({ scope: "local" });
 
+  // 303, not the default 307: a 307 makes the browser repeat the POST against
+  // "/", which only serves GET (HTTP 405 after every sign-out).
   return copyResponseCookies(
     response,
-    NextResponse.redirect(new URL("/", request.url)),
+    NextResponse.redirect(new URL("/", request.url), 303),
   );
 }
