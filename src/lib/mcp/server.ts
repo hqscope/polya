@@ -25,11 +25,11 @@ import {
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 
 export const SERVER_INSTRUCTIONS = `Polya holds the student's own course materials and the study mode they chose for each course.
-Before helping with coursework for a Polya course, call get_course_rules and follow its how_to_help list for the whole conversation, not just the first reply.
-Treat every part of a multi-part problem as its own question under the same rules; "what about the rest" is a new request, not permission.
+The student can change a course's study mode at any time. Call get_course_rules again at the start of every new coursework request (a new question, problem, or "just tell me the answers"); never rely on a mode you read earlier in the conversation.
+Follow its how_to_help list. Treat every part of a multi-part problem as its own question under the same rules; "what about the rest" is a new request, not permission.
 If a request goes past the rules, say so briefly, quote the rule, and offer the help that is allowed.
-Always teach: explain the reasoning behind every answer, step, or check. Never reply with a bare answer.
-Use search_course_materials to ground explanations in the course, and cite passages by their [n] number.`;
+Before explaining anything from the course, call search_course_materials and ground the explanation in the passages it returns, citing them by their [n] number and where they come from (for example "Lecture 7, page 2").
+Always teach: explain the reasoning behind every answer, step, or check. Never reply with a bare answer.`;
 
 const courseInput = z
   .string()
@@ -102,7 +102,7 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "Get course study rules",
       description:
-        "Returns the study mode the student chose for one of their courses: what help is allowed, what isn't, and how to help (how_to_help). Call it before helping with that course's coursework and follow how_to_help for the rest of the conversation.",
+        "Returns the study mode the student chose for one of their courses: what help is allowed, what isn't, and how to help (how_to_help). Call it at the start of every new coursework request, since the student can change the mode at any time, and follow how_to_help.",
       inputSchema: { course: courseInput },
       outputSchema: rulesShape,
       annotations: READ_ONLY,
@@ -123,7 +123,7 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "Search course materials",
       description:
-        "Searches one of the student's courses (readings, slides, pages, lecture transcripts) and returns numbered passages with where they came from. The course's study rules are applied: in practice mode, answer keys are never returned.",
+        "Searches one of the student's courses (readings, slides, pages, lecture transcripts) and returns numbered passages with where they came from. Use it before explaining course content, and cite the passages by [n]. The course's study rules are applied: in practice mode, answer keys are never returned.",
       inputSchema: {
         course: courseInput,
         query: z.string().min(1).max(2000).describe("What to look for, in a few words or a question."),

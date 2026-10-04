@@ -112,7 +112,9 @@ export default function PrivacyPage() {
       <p>
         It&apos;s never shown in the app after you enter it, and it&apos;s
         used only to read the courses you choose to connect. Nothing is ever
-        posted back to Canvas. Email us at any time to remove it.
+        posted back to Canvas. Email us at any time to remove it. Removing it
+        from Polya doesn&apos;t switch it off in Canvas; you can do that yourself
+        in Canvas under Account, then Settings, then Approved Integrations.
       </p>
 
       <h2>Your course materials</h2>
@@ -139,6 +141,11 @@ export default function PrivacyPage() {
           browser extension, so deleting it removes your data there too.
         </li>
       </ul>
+      <p>
+        Short-lived copies held by the services that help run Polya, and copies
+        in our backups, are removed on those services&apos; and our backups&apos;
+        own schedules rather than the moment you ask.
+      </p>
 
       <h2>Removing your data</h2>
       <p>

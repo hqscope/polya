@@ -35,6 +35,7 @@ test("every mode tells the assistant to explain, never a bare answer", () => {
   for (const mode of ["open", "guided", "practice", "review"] as const) {
     assert.ok(studyRulesFor(mode).how_to_help.some((line) => /never reply with a bare answer/i.test(line)));
     assert.match(rulesReminder(mode), /never give a bare answer/i);
+    assert.ok(studyRulesFor(mode).how_to_help.some((line) => /check get_course_rules again/.test(line)));
   }
 });
 

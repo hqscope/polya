@@ -18,7 +18,12 @@ export interface StudyRules {
 // Every mode teaches. A bare result ("acceleration is 0") is not help in any
 // mode; the reasoning is the point.
 const EXPLAIN_EVERY_TIME =
-  "Explain the reasoning every time: name the course concept, show how it applies to this exact case step by step, and end with a quick check the student can reuse. Never reply with a bare answer.";
+  "Explain the reasoning every time: name the course concept, show how it applies to this exact case step by step, cite the course passages you used by [n], and end with a quick check the student can reuse. Never reply with a bare answer.";
+
+// The 2026-10-03 demo run: after the student switched Practice -> Open, the
+// assistant kept applying the old mode until told to "check again".
+const RECHECK =
+  "The student can change this mode at any time: check get_course_rules again before each new coursework request instead of reusing a mode from earlier in the conversation.";
 
 // The connector test (2026-10-03) showed the outside model holding the line on
 // the first ask, then answering "what about the rest" outright. Each part of a
@@ -35,6 +40,7 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
     how_to_help: [
       "Give the full answer or worked solution when asked.",
       EXPLAIN_EVERY_TIME,
+      RECHECK,
     ],
   },
   guided: {
@@ -52,6 +58,7 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
       "Once the student has shown their own attempt at a part, you may walk through that part fully.",
       EACH_PART,
       EXPLAIN_EVERY_TIME,
+      RECHECK,
     ],
   },
   practice: {
@@ -70,6 +77,7 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
       "Give at most one guided step at a time when they're stuck.",
       EACH_PART,
       EXPLAIN_EVERY_TIME,
+      RECHECK,
     ],
   },
   review: {
@@ -81,6 +89,7 @@ const RULES: Record<PolicyMode, Omit<StudyRules, "mode">> = {
       "Give full worked solutions, with the reasoning at every step.",
       "End with one related practice task the student can try.",
       EXPLAIN_EVERY_TIME,
+      RECHECK,
     ],
   },
 };
@@ -100,7 +109,7 @@ export function studyRulesFor(mode: PolicyMode): StudyRules {
 export function rulesReminder(mode: PolicyMode): string {
   const rules = RULES[mode];
   const partRule = mode === "guided" || mode === "practice" ? " Each part of a problem is its own question." : "";
-  return `${rules.label} mode: ${rules.summary}${partRule} Explain the reasoning; never give a bare answer.`;
+  return `${rules.label} mode (current as of this search; the student can change it): ${rules.summary}${partRule} Explain the reasoning and cite passages by [n]; never give a bare answer.`;
 }
 
 /** Content roles withheld from retrieval under a mode (practice hides solution keys). */

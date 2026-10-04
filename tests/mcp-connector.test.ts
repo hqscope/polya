@@ -60,7 +60,7 @@ test("search result carries no unit ids and prefers the longer passage", () => {
   assert.equal(result.passages[0]!.text, "Full passage text.");
   assert.equal(result.passages[1]!.text, "Short snippet.");
   assert.equal(result.passages[1]!.location, "lecture 1:05–2:10");
-  assert.ok(result.rules_summary.startsWith("Guided mode:"));
+  assert.ok(result.rules_summary.startsWith("Guided mode (current as of this search"));
 });
 
 test("location labels", () => {
