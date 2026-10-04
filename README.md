@@ -2,7 +2,7 @@
 
 Course-aware AI tutoring that helps students **learn** — hints, guided steps, and worked
 explanations grounded in their actual course materials, with every claim cited back to the exact
-page, slide, or lecture moment it came from. Instructors set the assistance level per course
+page, slide, or lecture moment it came from. Students choose the assistance level per course
 (Open / Guided / Practice / Review) and Polya's behavior follows.
 
 Named for George Pólya, whose *How to Solve It* taught teaching-by-questions.

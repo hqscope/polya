@@ -8,7 +8,7 @@ import { contactEmail, defaultOpenGraph } from "@/lib/seo";
 export const metadata: Metadata = {
   title: "For instructors & universities",
   description:
-    "Set a per-course assistance policy — Open, Guided, Practice, or Review — and Polya visibly follows it, tutoring from the materials you assigned with a citation on every answer.",
+    "A tutor that teaches from the materials you assigned, follows a visible study mode — Open, Guided, Practice, or Review — and cites a source for every answer.",
   alternates: { canonical: "/for-instructors" },
   openGraph: { ...defaultOpenGraph, url: "/for-instructors" },
 };
@@ -40,21 +40,24 @@ export default function ForInstructorsPage() {
         <article className="mx-auto w-full max-w-[760px] px-7 pt-16 pb-24">
           <p className="eyebrow">For instructors &amp; universities</p>
           <h1 className="mt-4 text-[36px] leading-[1.1] tracking-[-0.03em] text-balance">
-            Set the rules AI help follows in your course.
+            AI help that teaches from what you assigned.
           </h1>
           <p className="m-0 mt-4 max-w-[620px] text-[15.5px] leading-[1.65] text-pretty text-ink2">
             Students already use AI to get through school. Polya turns that
             help into a tutor — one that teaches from what you assigned,
-            follows the policy you set, and shows its sources on every answer.
+            follows a study mode everyone can see, and shows its sources on every
+            answer.
           </p>
 
           <h2 className="mt-12 text-[21px] tracking-[-0.02em]">
             One dial, four positions
           </h2>
           <p className="m-0 mt-3.5 text-[14px] leading-[1.7] text-ink2">
-            Every course gets an assistance policy. Change it any time —
-            Polya&apos;s behavior follows immediately, and students see the
-            active policy in every conversation.
+            Every course has a study mode. Today students choose it for each
+            course; Polya&apos;s behavior follows immediately, and the active
+            mode shows in every conversation. Instructor-set modes aren&apos;t
+            available yet. If you&apos;d like to set the mode for your course,
+            get in touch.
           </p>
           <div className="mt-6 grid gap-3 md:grid-cols-2">
             {POLICIES.map(({ name, body }) => (
@@ -93,8 +96,8 @@ export default function ForInstructorsPage() {
             Transparent by design
           </h2>
           <p className="m-0 mt-3.5 text-[14px] leading-[1.7] text-ink2">
-            The policy is visible in every conversation, so the amount of help
-            is never a secret — not to your students, and not to you. Polya is
+            The study mode is visible in every conversation, so the amount of
+            help is never a secret. Polya is
             built to be adopted, not banned: a sanctioned way for students to
             get help that actually teaches.
           </p>
@@ -104,9 +107,9 @@ export default function ForInstructorsPage() {
           </h2>
           <p className="m-0 mt-3.5 text-[14px] leading-[1.7] text-ink2">
             Polya&apos;s stance is simple: help should build understanding,
-            not shortcut it. What counts as permitted help remains your call —
-            Polya gives you the dial to make that call real inside the tool
-            your students actually use.
+            not shortcut it. What counts as permitted help remains your call, and
+            we want to build the controls that make that call real inside the
+            tool your students use. Tell us what you&apos;d need.
           </p>
 
           <div className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-3">

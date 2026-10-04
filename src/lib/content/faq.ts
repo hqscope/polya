@@ -28,7 +28,7 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     question: "Is using Polya cheating?",
     answer:
-      "Polya is built for learning, not shortcuts. It teaches through problems instead of finishing them, shows the source behind every claim so you can verify it, and follows the assistance policy your instructor sets for the course. What counts as permitted help is always your instructor’s call — check your syllabus.",
+      "Polya is built for learning, not shortcuts. It teaches through problems instead of finishing them, shows the source behind every claim so you can verify it, and follows the study mode you choose for each course. What counts as permitted help is always your instructor’s call — check your syllabus.",
   },
   {
     question: "Where do Polya’s answers come from?",
@@ -38,7 +38,7 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     question: "Can my instructor control how much help Polya gives?",
     answer:
-      "Yes. Instructors choose a per-course assistance policy — Open, Guided, Practice, or Review — and Polya visibly follows it. Students see the active policy in every conversation.",
+      "Not yet. Today you choose the study mode for each course yourself — Open, Guided, Practice, or Review — and Polya visibly follows it, with the active mode shown in every conversation. If you teach a course and want to set it for your students, get in touch.",
   },
   {
     question: "Is Polya free?",

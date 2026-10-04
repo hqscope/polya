@@ -69,6 +69,13 @@ export default async function LoginPage({
             <GoogleG />
             Continue with Google
           </a>
+
+          <a
+            href={`/login/email?next=${encodeURIComponent(nextPath)}`}
+            className="self-center text-[12.5px] text-ink3 underline-offset-2 hover:text-ink hover:underline"
+          >
+            Sign in with email and password
+          </a>
         </div>
 
         <p className="m-0 text-center text-[11.5px] leading-relaxed text-ink3">

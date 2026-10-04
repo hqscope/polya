@@ -31,8 +31,8 @@ export default function TermsPage() {
       <h2>Academic integrity</h2>
       <p>
         You&apos;re responsible for following your institution&apos;s and
-        instructor&apos;s rules. Polya&apos;s assistance policies help
-        instructors shape what help looks like in their course, but your
+        instructor&apos;s rules. Polya&apos;s study modes let you choose what
+        help looks like in each course, but your
         syllabus and your school&apos;s honor code always govern what&apos;s
         permitted.
       </p>

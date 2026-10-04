@@ -36,6 +36,15 @@
       "path": "transcripts/lecture-7.vtt",
       "content_type": "text/vtt",
       "ext": "vtt"
+    },
+    {
+      "title": "Quiz 6 Answer Key",
+      "origin": "canvas_page",
+      "source_kind": "html",
+      "content_role": "solution_key",
+      "path": "pages/quiz-6-answer-key.html",
+      "content_type": "text/html",
+      "ext": "html"
     }
   ]
 }
