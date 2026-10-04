@@ -21,7 +21,11 @@ import {
   toSearchResult,
 } from "./format";
 
-// Read-only, confined to the student's own private course library.
+// Tool descriptions stay purely descriptive (Claude's directory forbids
+// behavioral instructions there); guidance lives in SERVER_INSTRUCTIONS and in
+// get_course_rules' how_to_help result.
+// Read-only, confined to the student's own private course library. Each tool
+// also repeats its title inside annotations: Claude's directory reads it there.
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 
 export const SERVER_INSTRUCTIONS = `Polya holds the student's own course materials and the study mode they chose for each course.
@@ -68,7 +72,7 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "List my courses",
       description:
-        "Lists the courses the student has added to Polya, with the handle other Polya tools need. Use it when the student mentions a class and you don't have its handle yet.",
+        "Lists the courses the student has added to Polya, each with its course name, term, whether its materials are ready, and a course handle.",
       outputSchema: {
         courses: z.array(
           z.object({
@@ -80,7 +84,7 @@ export function buildServer(accessToken: string): McpServer {
           }),
         ),
       },
-      annotations: READ_ONLY,
+      annotations: { ...READ_ONLY, title: "List my courses" },
     },
     async () => {
       try {
@@ -102,10 +106,10 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "Get course study rules",
       description:
-        "Returns the study mode the student chose for one of their courses: what help is allowed, what isn't, and how to help (how_to_help). Call it at the start of every new coursework request, since the student can change the mode at any time, and follow how_to_help.",
+        "Returns the study mode the student chose for one of their courses (Open, Guided, Practice or Review): what help is allowed, what isn't, and how help should look in that mode (how_to_help). The student can change the mode at any time.",
       inputSchema: { course: courseInput },
       outputSchema: rulesShape,
-      annotations: READ_ONLY,
+      annotations: { ...READ_ONLY, title: "Get course study rules" },
     },
     async ({ course }) => {
       try {
@@ -123,7 +127,7 @@ export function buildServer(accessToken: string): McpServer {
     {
       title: "Search course materials",
       description:
-        "Searches one of the student's courses (readings, slides, pages, lecture transcripts) and returns numbered passages with where they came from. Use it before explaining course content, and cite the passages by [n]. The course's study rules are applied: in practice mode, answer keys are never returned.",
+        "Searches one of the student's courses (readings, slides, pages, lecture transcripts) and returns numbered passages, each with where it came from. The course's study mode is applied: in Practice mode, answer keys are never returned.",
       inputSchema: {
         course: courseInput,
         query: z.string().min(1).max(2000).describe("What to look for, in a few words or a question."),
@@ -136,7 +140,7 @@ export function buildServer(accessToken: string): McpServer {
         ),
         open_in_polya: z.string(),
       },
-      annotations: READ_ONLY,
+      annotations: { ...READ_ONLY, title: "Search course materials" },
     },
     async ({ course, query }) => {
       try {
