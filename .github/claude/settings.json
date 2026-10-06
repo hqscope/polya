@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit",
+      "Write",
+      "Bash(git:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(deno:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue comment:*)"
+    ],
+    "deny": [
+      "Bash(supabase:*)",
+      "Bash(npx supabase:*)",
+      "Bash(vercel:*)",
+      "Bash(npx vercel:*)",
+      "Bash(git push origin main)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin HEAD:main*)",
+      "Bash(git push * main)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reset --hard*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh api:*)",
+      "Bash(rm -rf:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Read(.env*)",
+      "Write(.env*)",
+      "Edit(.env*)",
+      "Edit(supabase/migrations/**)",
+      "Write(supabase/migrations/**)",
+      "Edit(.github/workflows/**)",
+      "Write(.github/workflows/**)"
+    ]
+  }
+}

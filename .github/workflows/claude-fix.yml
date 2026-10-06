@@ -1,0 +1,102 @@
+# Installed by hqscope/scope-ops (scripts/install-workflow.ts). Edit the template there, not here.
+name: Claude fix
+run-name: "Claude fix #${{ github.event.issue.number || inputs.issue }}"
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+      note:
+        description: Extra guidance for this run
+        required: false
+        default: ""
+
+jobs:
+  fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'claude:fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Job-level, so runs skipped by the `if` (every other label event) never queue against a real fix run.
+    concurrency:
+      group: claude-fix-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # Leave no GITHUB_TOKEN in git config: pushes must use the Claude App token so the
+          # draft PR's CI runs (a GITHUB_TOKEN push doesn't trigger workflows normally).
+          persist-credentials: false
+
+      - name: Mark running
+        run: |
+          echo "RUN_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          current=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name | select(startswith("status:") and . != "status:running")] | join(",")')
+          gh issue edit "$ISSUE" --add-label status:running ${current:+--remove-label "$current"}
+
+      - name: Build prompt
+        id: prompt
+        env:
+          NOTE: ${{ inputs.note }}
+          REPO: ${{ github.repository }}
+        run: |
+          delim="PROMPT_$(openssl rand -hex 12)"
+          {
+            echo "text<<$delim"
+            sed -e "s|{{ISSUE}}|$ISSUE|g" -e "s|{{REPO}}|$REPO|g" .github/claude/fix-prompt.md
+            if [ -n "$NOTE" ]; then printf '\n## Note from the team for this run\n\n%s\n' "$NOTE"; fi
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+          # Cosmetic bugs go to the smaller model.
+          if gh issue view "$ISSUE" --json labels --jq '.labels[].name' | grep -qx 'sev:P3'; then
+            echo "model=sonnet" >> "$GITHUB_OUTPUT"
+          else
+            echo "model=opus" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "hqscope-scope-ops"
+          settings: .github/claude/settings.json
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: |
+            --max-turns 40
+            --model ${{ steps.prompt.outputs.model }}
+            --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(deno:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue comment:*)"
+
+      # Labels are the source of truth for the Slack card. Settle the end state here so a run
+      # never leaves the ticket stuck in "running".
+      - name: Settle status
+        if: always()
+        env:
+          OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          set -euo pipefail
+          flagged=$(gh issue view "$ISSUE" --json comments --jq '[.comments[] | select(.createdAt >= env.RUN_STARTED) | select(.body | contains("NEEDS-NOEL:"))] | length')
+          pr=$(gh pr list --state all --limit 50 --json number,headRefName,body \
+            --jq "[.[] | select(.headRefName | startswith(\"claude/\")) | select(.body | test(\"#${ISSUE}([^0-9]|$)\"))][0].number // empty")
+          if [ "$flagged" != "0" ]; then target=needs-noel
+          elif [ -n "$pr" ]; then target=pr-ready
+          elif [ "$OUTCOME" = "success" ]; then target=needs-noel
+          else target=failed
+          fi
+          current=$(gh issue view "$ISSUE" --json labels --jq "[.labels[].name | select(startswith(\"status:\") and . != \"status:$target\")] | join(\",\")")
+          gh issue edit "$ISSUE" --add-label "status:$target" ${current:+--remove-label "$current"}
+          if [ "$target" = "needs-noel" ] && [ "$flagged" = "0" ] && [ -z "$pr" ]; then
+            gh issue comment "$ISSUE" --body "NEEDS-NOEL: the fix run finished without opening a PR or explaining why. Check the run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi

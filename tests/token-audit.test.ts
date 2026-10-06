@@ -31,7 +31,7 @@ const ENTRY: TokenUseEntry = {
 
 // In-memory canvas_connection_audit; `failInsert` simulates the table being unwritable.
 function sink(opts: { failInsert?: boolean } = {}) {
-  const rows = new Map<number, AuditRow & Partial<AuditFinish>>();
+  const rows = new Map<number, AuditRow & Partial<Omit<AuditFinish, "finished_at">>>();
   const events: string[] = [];
   let next = 1;
   const s: AuditSink = {
