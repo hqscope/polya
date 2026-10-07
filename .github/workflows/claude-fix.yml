@@ -52,6 +52,7 @@ jobs:
         env:
           NOTE: ${{ inputs.note }}
           REPO: ${{ github.repository }}
+          AGENT_TOKEN: ${{ secrets.SCOPE_OPS_AGENT_TOKEN }}
         run: |
           delim="PROMPT_$(openssl rand -hex 12)"
           {
@@ -60,6 +61,19 @@ jobs:
             if [ -n "$NOTE" ]; then printf '\n## Note from the team for this run\n\n%s\n' "$NOTE"; fi
             echo "$delim"
           } >> "$GITHUB_OUTPUT"
+          # The agent's own line back to Slack (progress / reply / ask), scoped to this issue.
+          if [ -n "$AGENT_TOKEN" ]; then
+            jq -nc --arg t "$AGENT_TOKEN" --arg i "$REPO#$ISSUE" \
+              '{mcpServers:{"scope-ops":{type:"http",url:"https://scope-ops-rose.vercel.app/api/mcp",headers:{Authorization:("Bearer "+$t),"X-Scope-Issue":$i}}}}' \
+              > "$RUNNER_TEMP/scope-ops-mcp.json"
+            echo "mcp=--mcp-config $RUNNER_TEMP/scope-ops-mcp.json" >> "$GITHUB_OUTPUT"
+          fi
+          # Tasks get more room than bug fixes.
+          if gh issue view "$ISSUE" --json labels --jq '.labels[].name' | grep -qx 'type:task'; then
+            echo "turns=80" >> "$GITHUB_OUTPUT"
+          else
+            echo "turns=50" >> "$GITHUB_OUTPUT"
+          fi
           # Cosmetic bugs go to the smaller model.
           if gh issue view "$ISSUE" --json labels --jq '.labels[].name' | grep -qx 'sev:P3'; then
             echo "model=sonnet" >> "$GITHUB_OUTPUT"
@@ -75,9 +89,10 @@ jobs:
           settings: .github/claude/settings.json
           prompt: ${{ steps.prompt.outputs.text }}
           claude_args: |
-            --max-turns 40
+            --max-turns ${{ steps.prompt.outputs.turns }}
             --model ${{ steps.prompt.outputs.model }}
-            --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(deno:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue comment:*)"
+            ${{ steps.prompt.outputs.mcp }}
+            --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(deno:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run list:*),Bash(gh run view:*),mcp__scope-ops__progress,mcp__scope-ops__reply,mcp__scope-ops__ask"
 
       # Labels are the source of truth for the Slack card. Settle the end state here so a run
       # never leaves the ticket stuck in "running".
@@ -87,6 +102,13 @@ jobs:
           OUTCOME: ${{ steps.claude.outcome }}
         run: |
           set -euo pipefail
+          status=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name | select(startswith("status:"))][0] // ""')
+          # The agent marked it itself this run (answered a question, or asked one): keep that.
+          if [ "$status" = "status:done" ]; then
+            gh issue close "$ISSUE" --reason completed
+            exit 0
+          fi
+          if [ "$status" = "status:needs-noel" ]; then exit 0; fi
           flagged=$(gh issue view "$ISSUE" --json comments --jq '[.comments[] | select(.createdAt >= env.RUN_STARTED) | select(.body | contains("NEEDS-NOEL:"))] | length')
           pr=$(gh pr list --state all --limit 50 --json number,headRefName,body \
             --jq "[.[] | select(.headRefName | startswith(\"claude/\")) | select(.body | test(\"#${ISSUE}([^0-9]|$)\"))][0].number // empty")
@@ -95,8 +117,9 @@ jobs:
           elif [ "$OUTCOME" = "success" ]; then target=needs-noel
           else target=failed
           fi
-          current=$(gh issue view "$ISSUE" --json labels --jq "[.labels[].name | select(startswith(\"status:\") and . != \"status:$target\")] | join(\",\")")
-          gh issue edit "$ISSUE" --add-label "status:$target" ${current:+--remove-label "$current"}
+          # Comment first: the label change is what tells Slack, and it relays the newest note.
           if [ "$target" = "needs-noel" ] && [ "$flagged" = "0" ] && [ -z "$pr" ]; then
             gh issue comment "$ISSUE" --body "NEEDS-NOEL: the fix run finished without opening a PR or explaining why. Check the run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
+          current=$(gh issue view "$ISSUE" --json labels --jq "[.labels[].name | select(startswith(\"status:\") and . != \"status:$target\")] | join(\",\")")
+          gh issue edit "$ISSUE" --add-label "status:$target" ${current:+--remove-label "$current"}
