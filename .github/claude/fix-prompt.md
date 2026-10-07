@@ -36,8 +36,11 @@ and start from `main`.
 
 ## 1. Understand before changing anything
 
-- Read the issue and every comment: `gh issue view {{ISSUE}} --comments`. Comments may hold
-  notes from the team for this run.
+- Read the issue and every comment: `gh issue view {{ISSUE}} --json title,body,comments`
+  (`--comments` alone prints only the comments, not the body). Comments may hold notes from the
+  team for this run.
+- Keep shell commands simple. Each part of a chained command (`&&`, `;`, `|`) must be allowed on
+  its own, and commands using `$?`, `$(…)`, or shell variables are denied. Each denial costs a turn.
 - Read `CLAUDE.md` if the repo has one (some repos keep it out of git), and the `docs/` files for
   the area. This prompt holds every rule you need either way.
 - Reproduce the bug before fixing it. If the test suite can express it, write a failing test first.

@@ -14,8 +14,13 @@
       "Bash(gh pr create:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
       "Bash(gh issue view:*)",
-      "Bash(gh issue comment:*)"
+      "Bash(gh issue list:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)"
     ],
     "deny": [
       "Bash(supabase:*)",
