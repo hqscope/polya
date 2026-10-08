@@ -65,11 +65,20 @@ If the fix needs any of the following, don't do it. Comment on the issue with a 
 
 ## 4. Branch, commit, draft PR
 
-- Branch: `claude/polya-{{ISSUE}}`, created from the default branch.
-- Commit message: `fix(<area>): <summary> (#{{ISSUE}})`.
+- **Reuse the existing branch on a retry.** First run
+  `gh pr list --state open --search "{{ISSUE}} in:body" --json number,headRefName,body` and look for a
+  PR whose body says `Fixes #{{ISSUE}}`. If there is one, check out its branch, push your new commits
+  there, and don't open a second PR.
+- **Otherwise create a branch from the default branch**, named for what it does:
+  - `type:bug` → `fix/<name>-{{ISSUE}}`
+  - `type:task` → `feature/<name>-{{ISSUE}}`
+  - `<name>` is 2 to 5 lowercase words joined by hyphens that say what changes, such as
+    `fix/escape-ticket-titles-{{ISSUE}}` or `feature/runs-waiting-list-{{ISSUE}}`. Keep the
+    `-{{ISSUE}}` at the end.
+- Commit message: `fix(<area>): <summary> (#{{ISSUE}})` (use `feat` for tasks).
 - Push only that branch. Never push to `main`, never force-push, never merge.
 - Open a **draft** PR:
-  `gh pr create --draft --base main --head claude/polya-{{ISSUE}} --title "fix(<area>): <summary> (#{{ISSUE}})" --body-file <file>`
+  `gh pr create --draft --base main --head <your branch> --title "fix(<area>): <summary> (#{{ISSUE}})" --body-file <file>`
 - The PR body has these sections, in order:
   - **Summary**
   - **Root cause**

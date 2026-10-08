@@ -56,7 +56,7 @@ Bugs and tasks filed from Slack (or handed off from Claude) become GitHub issues
 `.github/workflows/claude-fix.yml`, which runs Claude with `.github/claude/fix-prompt.md`.
 
 - **Tests:** `npm test`. Run only the tests that cover the change.
-- **Output:** a draft PR from `claude/polya-<issue>` with Summary, Root cause, Changes,
+- **Output:** a draft PR from `fix/<name>-<issue>` (bugs) or `feature/<name>-<issue>` (tasks) with Summary, Root cause, Changes,
   **Verified**, **Not verified**, and `Fixes #<issue>`. Noel merges. The agent never pushes to
   `main`, merges, or force-pushes.
 - **Out of bounds** (comment `NEEDS-NOEL: <why>` and stop): migrations or `supabase/`, edge-function

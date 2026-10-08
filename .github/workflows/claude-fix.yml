@@ -111,7 +111,7 @@ jobs:
           if [ "$status" = "status:needs-noel" ]; then exit 0; fi
           flagged=$(gh issue view "$ISSUE" --json comments --jq '[.comments[] | select(.createdAt >= env.RUN_STARTED) | select(.body | contains("NEEDS-NOEL:"))] | length')
           pr=$(gh pr list --state all --limit 50 --json number,headRefName,body \
-            --jq "[.[] | select(.headRefName | startswith(\"claude/\")) | select(.body | test(\"#${ISSUE}([^0-9]|$)\"))][0].number // empty")
+            --jq "[.[] | select(.headRefName | test(\"^(fix|feature|claude)/\")) | select(.body | test(\"#${ISSUE}([^0-9]|$)\"))][0].number // empty")
           if [ "$flagged" != "0" ]; then target=needs-noel
           elif [ -n "$pr" ]; then target=pr-ready
           elif [ "$OUTCOME" = "success" ]; then target=needs-noel
