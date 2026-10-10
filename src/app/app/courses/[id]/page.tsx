@@ -46,7 +46,7 @@ export default async function CoursePage({
   const { id } = await params;
   const { c: conversationId } = await searchParams;
 
-  const [{ data: course }, { data: policy }, { data: recentRows }] = await Promise.all([
+  const [{ data: course, error: courseError }, { data: policy }, { data: recentRows }] = await Promise.all([
     supabase
       .from("polya_courses")
       .select("name, code, term_name")
@@ -70,6 +70,10 @@ export default async function CoursePage({
           .limit(RECENT_CONVERSATION_LIMIT),
   ]);
 
+  // Couldn't load it: the retry notice, not a bounce to the course list.
+  if (courseError) {
+    throw new Error("course-unavailable");
+  }
   if (!course) {
     redirect("/app");
   }

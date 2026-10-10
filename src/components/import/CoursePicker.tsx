@@ -88,8 +88,8 @@ export default function CoursePicker({ courses, onImport, busy, importedStatus }
               <li key={id}>
                 <div className="flex w-full items-center gap-3 rounded-[9px] border border-line-soft bg-rail px-4 py-[13px]">
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-[13.5px] font-semibold text-ink2">{course.name}</span>
-                    <span className="font-mono text-[10.5px] text-ink3">{courseMeta(course)}</span>
+                    <span className="text-[13.5px] font-semibold text-ink2 wrap-anywhere">{course.name}</span>
+                    <span className="font-mono text-[10.5px] text-ink3 wrap-anywhere">{courseMeta(course)}</span>
                   </span>
                   <span
                     className={`ml-auto shrink-0 rounded px-[7px] py-0.5 text-[10px] font-[650] uppercase tracking-[0.06em] ${
@@ -119,8 +119,8 @@ export default function CoursePicker({ courses, onImport, busy, importedStatus }
                   className="h-[15px] w-[15px] shrink-0 cursor-pointer accent-accent"
                 />
                 <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="text-[13.5px] font-semibold">{course.name}</span>
-                  <span className="font-mono text-[10.5px] text-ink3">{courseMeta(course)}</span>
+                  <span className="text-[13.5px] font-semibold wrap-anywhere">{course.name}</span>
+                  <span className="font-mono text-[10.5px] text-ink3 wrap-anywhere">{courseMeta(course)}</span>
                 </span>
               </label>
             </li>
