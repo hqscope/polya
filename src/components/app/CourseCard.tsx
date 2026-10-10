@@ -63,7 +63,7 @@ export default function CourseCard({ course }: { course: CourseCardData }) {
   }
 
   return (
-    <div ref={wrapRef} className="relative">
+    <div ref={wrapRef} className="relative min-w-0">
       <Link
         href={`/app/courses/${course.id}`}
         aria-hidden={deleting}
@@ -72,8 +72,8 @@ export default function CourseCard({ course }: { course: CourseCardData }) {
         }`}
       >
         <div className="flex flex-col gap-[3px] pr-7">
-          <span className="font-mono text-[10.5px] text-ink3">{course.meta}</span>
-          <h2 className="text-[15.5px] tracking-[-0.015em]">{course.name}</h2>
+          <span className="font-mono text-[10.5px] text-ink3 wrap-anywhere">{course.meta}</span>
+          <h2 className="text-[15.5px] tracking-[-0.015em] wrap-anywhere">{course.name}</h2>
         </div>
         <div className="mt-auto flex items-center gap-2.5 border-t border-line-soft pt-3">
           {course.importing ? (
@@ -120,7 +120,7 @@ export default function CourseCard({ course }: { course: CourseCardData }) {
           {confirming ? (
             <div className="flex flex-col gap-2 p-1.5">
               <p className="text-[12px] leading-[1.4] text-ink2">
-                Remove <span className="font-semibold text-ink">{course.name}</span>{" "}
+                Remove <span className="font-semibold text-ink wrap-anywhere">{course.name}</span>{" "}
                 and everything imported for it?
               </p>
               {error ? (

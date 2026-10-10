@@ -131,14 +131,16 @@ export default function TranscriptUpload({ courseId }: Props) {
         it was said.
       </p>
 
-      <div className="flex items-center gap-3">
-        <label className="button-secondary h-8 cursor-pointer self-start rounded-[7px] px-[13px] text-[12.5px]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        {/* The input stays in the tab order (visually hidden, not display:none),
+            so the picker opens from the keyboard too. */}
+        <label className="button-secondary h-8 shrink-0 cursor-pointer self-start rounded-[7px] px-[13px] text-[12.5px] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent">
           {busy ? "Adding…" : "Choose transcript file"}
           <input
             type="file"
             accept=".txt,.json,.vtt,.srt"
             disabled={busy}
-            className="hidden"
+            className="sr-only"
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void handleFile(file);

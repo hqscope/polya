@@ -26,7 +26,12 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
   }
   const { id } = await params;
 
-  const [{ data: course }, { data: sources }, { data: policy }, { data: checks }] =
+  const [
+    { data: course, error: courseError },
+    { data: sources, error: sourcesError },
+    { data: policy },
+    { data: checks },
+  ] =
     await Promise.all([
       supabase
         .from("polya_courses")
@@ -51,6 +56,8 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
         .limit(20),
     ]);
 
+  // A failed load shows the retry notice, not an empty or missing course.
+  if (courseError || sourcesError) throw new Error("materials-unavailable");
   if (!course) redirect("/app");
 
   const total = (sources ?? []).length;
@@ -121,7 +128,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
         ) : null}
 
         <section className="flex flex-col gap-2.5 border-t border-line pt-6">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <span className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">
               Everything Polya is studying
             </span>
