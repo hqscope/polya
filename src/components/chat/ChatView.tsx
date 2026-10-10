@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { streamTutor, type MasteryVerdict, type TutorSource } from "@/lib/sse";
 import { track } from "@/lib/track";
@@ -85,6 +86,7 @@ export default function ChatView({
   const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   // From `lg` up an opened source fills the rail; below it, a bottom sheet.
   // Exactly one of them is mounted, so a source is only ever fetched once.
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
@@ -135,6 +137,15 @@ export default function ChatView({
     railMessageIndex !== messages.length &&
     latestSourcedIndex !== null &&
     railMessageIndex !== latestSourcedIndex;
+
+  // The question box grows with what's typed (up to its max height, then it
+  // scrolls), so a pasted problem or a Shift+Enter line stays in view.
+  useLayoutEffect(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${box.scrollHeight}px`;
+  }, [input]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -270,6 +281,29 @@ export default function ChatView({
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
 
+  // Back to a blank question box. A resumed conversation lives in the URL
+  // (`?c=`), so leaving it remounts the page fresh; a conversation started on
+  // this visit is cleared in place.
+  const router = useRouter();
+  const startNewConversation = useCallback(() => {
+    if (initialConversationId) {
+      router.push(`/app/courses/${courseId}`);
+      return;
+    }
+    setMessages([]);
+    setStreaming("");
+    setPendingSources([]);
+    setConversationId(undefined);
+    setActiveCitation(null);
+    setRailIndex(null);
+    setViewing(null);
+    setMasteryCheckId(null);
+    setVerdicts({});
+    setFailedTurn(null);
+    setInput("");
+    inputRef.current?.focus();
+  }, [courseId, initialConversationId, router]);
+
   const retry = useCallback(() => {
     if (!failedTurn) return;
     void send(failedTurn.text, failedTurn.attempt, failedTurn.mastery);
@@ -310,9 +344,24 @@ export default function ChatView({
           {policyLabel}
           <span className="hidden sm:inline"> · {policyDesc}</span>
         </Link>
+        {messages.length > 0 ? (
+          <button
+            type="button"
+            onClick={startNewConversation}
+            disabled={busy}
+            className="button-secondary ml-auto h-7 shrink-0 cursor-pointer rounded-md px-[11px] text-[12.5px] disabled:cursor-default disabled:opacity-50"
+          >
+            <span className="sm:hidden">
+              New<span className="sr-only"> conversation</span>
+            </span>
+            <span className="hidden sm:inline">New conversation</span>
+          </button>
+        ) : null}
         <Link
           href={materialsHref}
-          className="button-secondary ml-auto h-7 shrink-0 rounded-md px-[11px] text-[12.5px]"
+          className={`button-secondary h-7 shrink-0 rounded-md px-[11px] text-[12.5px] ${
+            messages.length > 0 ? "" : "ml-auto"
+          }`}
         >
           <span className="sm:hidden">Materials</span>
           <span className="hidden sm:inline">Course materials</span>
@@ -435,7 +484,7 @@ export default function ChatView({
                   answeringCheck ? { phase: "answer", check_id: masteryCheckId! } : undefined,
                 );
               }}
-              className="mx-auto flex max-w-[660px] flex-col gap-[7px] rounded-[10px] border border-line bg-surface px-2.5 py-[9px] shadow-card"
+              className="mx-auto flex max-w-[660px] flex-col gap-[7px] rounded-[10px] border border-line bg-surface px-2.5 py-[9px] shadow-card focus-within:border-ink3"
             >
               {lectureOpen ? (
                 <div className="flex flex-col gap-1 rounded-md bg-accent-soft/40 px-1.5 pt-1.5 pb-1">
@@ -456,6 +505,7 @@ export default function ChatView({
                 </div>
               ) : null}
               <textarea
+                ref={inputRef}
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
