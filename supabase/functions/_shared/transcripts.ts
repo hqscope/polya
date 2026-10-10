@@ -1,5 +1,6 @@
 // Transcript parsing — .txt, Kaltura .json, .vtt, .srt → timed segments.
 // Pure module (no runtime globals) so it's Node-testable.
+import { sanitizeDbText } from "./db-text.ts";
 
 export interface TranscriptSegment {
   ordinal: number;
@@ -15,6 +16,15 @@ const SEG_MAX_MS = 120_000;
 
 export function parseTranscript(raw: string, kind: string): TranscriptSegment[] {
   const text = String(raw || "");
+  // Sanitize the parsed segments, not the raw file: a JSON transcript carries
+  // NULs as "\u0000" escapes that only become real NULs after JSON.parse.
+  return parseByKind(text, kind)
+    .map((segment) => ({ ...segment, text: sanitizeDbText(segment.text).trim() }))
+    .filter((segment) => segment.text.length > 0)
+    .map((segment, ordinal) => ({ ...segment, ordinal }));
+}
+
+function parseByKind(text: string, kind: string): TranscriptSegment[] {
   switch (kind) {
     case "transcript_json":
       return parseKalturaJson(text);

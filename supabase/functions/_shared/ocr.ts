@@ -7,6 +7,7 @@
 import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 import type { PageText } from "./chunker.ts";
+import { ocrTextFromParts } from "./db-text.ts";
 import {
   GEMINI_KEY,
   GeminiTransientError,
@@ -74,11 +75,7 @@ async function ocrOnePage(pdfBytes: Uint8Array): Promise<string> {
   const data = (await response.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
-  return (data.candidates?.[0]?.content?.parts ?? [])
-    .map((part) => part.text ?? "")
-    .join("")
-    .replace(/\s+\n/g, "\n")
-    .trim();
+  return ocrTextFromParts(data.candidates?.[0]?.content?.parts ?? []);
 }
 
 // OCR the given 1-indexed pages of a PDF. Returns one PageText per page that

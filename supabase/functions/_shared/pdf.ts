@@ -4,6 +4,7 @@
 import { getDocumentProxy } from "https://esm.sh/unpdf@0.12.1";
 
 import type { PageText } from "./chunker.ts";
+import { pageTextFromItems } from "./db-text.ts";
 
 const MIN_TEXT_CHARS = 50; // pages below this count as empty (scanned/slide)
 
@@ -48,11 +49,7 @@ export async function extractPageRange(
   for (let pageNum = from; pageNum <= to; pageNum++) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
-    const text = content.items
-      .map((item: unknown) => (item as { str?: string }).str ?? "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const text = pageTextFromItems(content.items);
 
     if (text.length >= MIN_TEXT_CHARS) {
       pages.push({ pageNum, text });

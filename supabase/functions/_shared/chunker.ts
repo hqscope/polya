@@ -1,6 +1,7 @@
 // Chunking — port of the extension's course-materials.js splitter
 // (CHUNK_MAX_CHARS / CHUNK_OVERLAP_CHARS / sentence-boundary snapping).
 // Pure module: no runtime globals.
+import { sanitizeDbText } from "./db-text.ts";
 
 export const CHUNK_MAX_CHARS = 1700;
 export const CHUNK_OVERLAP_CHARS = 140;
@@ -22,7 +23,9 @@ export interface PageChunk {
 }
 
 export function splitTextIntoChunks(text: string): string[] {
-  const source = String(text || "").trim();
+  // Last line of defense for every chunked path (PDF pages, HTML bodies): a
+  // NUL or lone surrogate here would fail the whole content_units insert.
+  const source = sanitizeDbText(String(text || "")).trim();
   if (!source) return [];
   if (source.length <= CHUNK_MAX_CHARS) return [source];
 
