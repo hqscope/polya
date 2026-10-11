@@ -44,6 +44,7 @@ import {
 } from "../_shared/polya-rate-limits.ts";
 import { readJsonCapped } from "../_shared/read-json-capped.ts";
 import { bearerToken, secretMatches } from "../_shared/service-role.ts";
+import { nextPumpMove } from "../_shared/pump-plan.ts";
 
 // Local-only escape hatch so the mock-Canvas integration test can point a
 // connection at 127.0.0.1. Never set in the deployed project.
@@ -892,6 +893,15 @@ async function selfInvokePump(userId: string, token: string): Promise<boolean> {
   }
 }
 
+// Pass the lease to a fresh invocation. If the hand-off can't reach the worker,
+// drop the lease so the next client kick or cron sweep restarts the import at
+// once, instead of every source waiting out the lease TTL behind a dead worker.
+async function handOffPump(userId: string, token: string): Promise<void> {
+  if (await selfInvokePump(userId, token)) return;
+  console.error("[polya-import] pump hand-off failed; releasing lease for a re-kick");
+  await releaseLease(userId);
+}
+
 // Drain queued sources across ALL of the user's importing courses until the
 // queue empties or the wall budget is hit (then hand off to a fresh invocation).
 async function runPump(userId: string, token: string): Promise<void> {
@@ -925,8 +935,10 @@ async function runPump(userId: string, token: string): Promise<void> {
             await advanceClaimedSource(source, connection, ctx);
           }),
         );
-        if (Date.now() >= deadline) {
-          await selfInvokePump(userId, token); // hand off to a fresh invocation
+        // A PDF cycle spends most of an invocation's CPU allowance, so hand off
+        // right after it rather than at the wall budget (pump-plan.ts).
+        if (nextPumpMove(sources, Date.now(), deadline) === "handoff") {
+          await handOffPump(userId, token);
           return;
         }
         continue;
@@ -947,7 +959,7 @@ async function runPump(userId: string, token: string): Promise<void> {
       }
       const remaining = deadline - Date.now();
       if (wait >= remaining) {
-        await selfInvokePump(userId, token);
+        await handOffPump(userId, token);
         return;
       }
       await sleep(wait);
