@@ -130,16 +130,30 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
         ) : null}
       </div>
 
-      {meta?.canvas_url ? (
-        <div className="shrink-0 border-t border-line-soft px-3.5 py-2.5">
-          <a
-            href={meta.canvas_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[12px] font-semibold"
-          >
-            Open in Canvas ↗
-          </a>
+      {/* Phone browsers don't show a PDF inside the page (or show only its
+          first page), so the PDF can always open on its own too. */}
+      {signedUrl || meta?.canvas_url ? (
+        <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-t border-line-soft px-3.5 py-2.5">
+          {signedUrl ? (
+            <a
+              href={signedUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[12px] font-semibold"
+            >
+              Open the PDF ↗
+            </a>
+          ) : null}
+          {meta?.canvas_url ? (
+            <a
+              href={meta.canvas_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[12px] font-semibold"
+            >
+              Open in Canvas ↗
+            </a>
+          ) : null}
         </div>
       ) : null}
     </div>

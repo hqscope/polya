@@ -76,12 +76,12 @@ export default function RefreshMaterials({ canvasCourseId, connectionId }: Props
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <button
           type="button"
           onClick={handleRefresh}
           disabled={state === "checking"}
-          className="self-start rounded-lg border border-line bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-ink hover:border-ink3 hover:bg-rail disabled:cursor-default disabled:opacity-60"
+          className="shrink-0 self-start rounded-lg border border-line bg-surface px-3 py-1.5 text-[12.5px] font-semibold whitespace-nowrap text-ink hover:border-ink3 hover:bg-rail disabled:cursor-default disabled:opacity-60"
         >
           {state === "checking" ? "Checking Canvas…" : "Check for updates"}
         </button>

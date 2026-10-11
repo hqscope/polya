@@ -22,7 +22,7 @@ export default async function AppHomePage() {
 
   // Source counts come pre-aggregated, one row per course
   // (`polya_course_source_counts`, security_invoker), not every source row.
-  const [{ data: courses }, { data: policies }, { data: counts }] =
+  const [{ data: courses, error: coursesError }, { data: policies }, { data: counts }] =
     await Promise.all([
       supabase
         .from("polya_courses")
@@ -31,6 +31,12 @@ export default async function AppHomePage() {
       supabase.from("polya_course_policies").select("course_id, mode"),
       supabase.from("polya_course_source_counts").select("course_id, total, ready, in_progress"),
     ]);
+
+  // A failed load isn't an empty library: show the retry notice
+  // (`app/app/error.tsx`), not "Bring in your first course".
+  if (coursesError) {
+    throw new Error("courses-unavailable");
+  }
 
   if (!courses || courses.length === 0) {
     return (

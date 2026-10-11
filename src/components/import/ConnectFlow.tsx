@@ -50,7 +50,11 @@ function StepIndicator({ current }: { current: number }) {
         const done = step.n < current;
         const active = step.n === current;
         return (
-          <div key={step.n} className="flex min-w-0 flex-1 items-center gap-[9px]">
+          // The named step keeps room for its label; the others give way.
+          <div
+            key={step.n}
+            className={`flex flex-1 items-center gap-[9px] ${active ? "min-w-fit" : "min-w-0"}`}
+          >
             <span
               className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-[11px] font-bold ${
                 done || active

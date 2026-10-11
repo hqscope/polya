@@ -40,7 +40,7 @@ function renderInline(text: string): ReactNode[] {
       nodes.push(<em key={key++}>{match[3] ?? match[4]}</em>);
     } else {
       nodes.push(
-        <code key={key++} className="rounded bg-line-soft px-1 py-px text-[0.85em]">
+        <code key={key++} className="rounded bg-line-soft px-1 py-px text-[0.85em] wrap-anywhere">
           {match[5]}
         </code>,
       );
@@ -85,7 +85,7 @@ export default function MessageBubble({
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%] rounded-[10px] bg-line-soft px-[13px] py-[9px] text-[13.5px] leading-relaxed">
+        <div className="max-w-[78%] rounded-[10px] bg-line-soft px-[13px] py-[9px] text-[13.5px] leading-relaxed whitespace-pre-wrap wrap-anywhere">
           {message.content}
         </div>
       </div>
@@ -95,7 +95,7 @@ export default function MessageBubble({
   const handleCite = onCiteClick ? (n: number) => onCiteClick(messageIndex, n) : undefined;
 
   return (
-    <div className="flex animate-fade-up flex-col gap-2.5 text-[14px] leading-[1.75] text-ink">
+    <div className="flex min-w-0 animate-fade-up flex-col gap-2.5 text-[14px] leading-[1.75] text-ink wrap-break-word">
       {renderAssistant(message.content, handleCite, activeCitation, caret)}
     </div>
   );
