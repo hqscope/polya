@@ -1,6 +1,7 @@
 // Per-user daily caps on import work that costs money or heavy CPU: PDF pages
-// parsed, and image-only pages sent to OCR (one Gemini call each). Pure module
-// (no Deno globals) so Node's test runner covers it directly.
+// parsed, and image-only pages sent to OCR (one model call each; ocr.ts picks
+// the provider). Pure module (no Deno globals) so Node's test runner covers it
+// directly.
 //
 // Sizing, from plans/september-2026/COSTS.md §1: a typical course is about
 // 1,620 PDF pages, of which about 320 need OCR (worst case 1,120-1,620 if every
@@ -11,10 +12,10 @@
 //     course; worst-case OCR spend is about $2.70 per user per day.
 // Hitting a cap never fails an import: the source waits and resumes after the
 // daily reset (UTC midnight) through the pump's normal retry backoff.
-// OCR pages and document embeddings also draw on the project-wide Gemini
+// OCR pages and document embeddings also draw on the project-wide per-provider
 // budget (ai-budget.ts, R-5), which waits for the reset the same way.
 import { incrementUsageDaily, type RpcClient } from "./rate-limit.ts";
-import { claimAiBudget, estimateEmbeddingUnits, OCR_PAGE_UNITS } from "./ai-budget.ts";
+import { type AiProvider, claimAiBudget, estimateEmbeddingUnits, OCR_PAGE_UNITS } from "./ai-budget.ts";
 
 export const DAILY_PDF_PAGE_CAP = 10_000;
 export const DAILY_OCR_PAGE_CAP = 2_000;
@@ -79,6 +80,8 @@ export class ImportMeterUnavailableError extends Error {
  * Adds `units` to today's total for the user and throws when the new total is
  * over the cap (DailyImportCapError) or the meter can't be read
  * (ImportMeterUnavailableError). Call it BEFORE doing the work it meters.
+ * `ocrProvider` names the project-wide budget OCR pages draw on (ocr.ts
+ * decides which model transcribes them).
  */
 export async function chargeImportUnits(
   client: RpcClient,
@@ -86,16 +89,17 @@ export async function chargeImportUnits(
   unit: ImportUnit,
   units: number,
   now: Date = new Date(),
+  ocrProvider: AiProvider = "gemini",
 ): Promise<void> {
   if (units <= 0) return;
   const { bucket, cap } = BUCKETS[unit];
   const total = await incrementUsageDaily(client, userId, bucket, Math.ceil(units));
   if (total === null) throw new ImportMeterUnavailableError();
   if (total > cap) throw new DailyImportCapError(unit, now);
-  // OCR pages are Gemini calls, so they also draw on the project-wide budget,
+  // OCR pages are model calls, so they also draw on the project-wide budget,
   // after the user's own cap has passed.
   if (unit === "ocr") {
-    await chargeAiBudget(client, userId, Math.ceil(units) * OCR_PAGE_UNITS, now);
+    await chargeAiBudget(client, userId, Math.ceil(units) * OCR_PAGE_UNITS, now, ocrProvider);
   }
 }
 
@@ -115,8 +119,14 @@ export async function chargeEmbeddingBudget(
   await chargeAiBudget(client, userId, estimateEmbeddingUnits(chars), now);
 }
 
-async function chargeAiBudget(client: RpcClient, userId: string, units: number, now: Date): Promise<void> {
-  const result = await claimAiBudget(client, "gemini", userId, units);
+async function chargeAiBudget(
+  client: RpcClient,
+  userId: string,
+  units: number,
+  now: Date,
+  provider: AiProvider = "gemini",
+): Promise<void> {
+  const result = await claimAiBudget(client, provider, userId, units);
   if (result === "busy") throw new AiBudgetBusyError(now);
   if (result !== "ok") throw new ImportMeterUnavailableError();
 }

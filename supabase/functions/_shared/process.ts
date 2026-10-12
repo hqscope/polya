@@ -25,7 +25,7 @@ import {
 } from "./ingest.ts";
 import { extractPageRange, getPdfInfo } from "./pdf.ts";
 import type { PageText } from "./chunker.ts";
-import { ocrEnabled, ocrPdfPages } from "./ocr.ts";
+import { ocrEnabled, ocrPdfPages, ocrProvider } from "./ocr.ts";
 import { GeminiTransientError } from "./embeddings.ts";
 import { chargeImportUnits } from "./import-caps.ts";
 import { STORAGE_FULL_MESSAGE, StorageFullError } from "./storage-quota.ts";
@@ -49,7 +49,7 @@ const MAX_ATTEMPTS = 8; // transient (quota/rate-limit) retries before giving up
 // Columns advance() needs off a claimed source. Exported so the background
 // pump's batch claim projects the same shape as processOneStep's single claim.
 export const SOURCE_COLUMNS =
-  "id, user_id, course_id, origin, source_kind, canvas_id, title, folder_path, module_name, canvas_url, storage_path, content_role, page_count, pages_parsed, chunks_embedded, attempts, status, content_sha256, needs_refresh, due_at";
+  "id, user_id, course_id, origin, source_kind, canvas_id, title, folder_path, module_name, canvas_url, storage_path, content_role, page_count, pages_parsed, chunks_embedded, size_bytes, attempts, status, content_sha256, needs_refresh, due_at";
 
 export interface ProcessResult {
   done: boolean;
@@ -347,7 +347,7 @@ async function advancePdf(source: SourceRow, connection: Connection | null): Pro
       });
       const bytes = await client.downloadFile(source.canvas_url!);
       const sha = await sha256Hex(bytes);
-      if (refreshing && source.content_sha256 && sha === source.content_sha256) {
+      if (refreshing && unchangedOutput(source, sha)) {
         // Timestamp moved but bytes didn't — keep the existing units.
         await service
           .from("polya_sources")
@@ -382,7 +382,7 @@ async function advancePdf(source: SourceRow, connection: Connection | null): Pro
     // Fixture / uploaded / extension-registered PDF: bytes already in storage.
     const bytes = await downloadFromStorage(source.storage_path);
     const sha = await sha256Hex(bytes);
-    if (refreshing && source.content_sha256 && sha === source.content_sha256) {
+    if (refreshing && unchangedOutput(source, sha)) {
       await service
         .from("polya_sources")
         .update({ needs_refresh: false, status: "ready" })
@@ -418,13 +418,13 @@ async function advancePdf(source: SourceRow, connection: Connection | null): Pro
   if (range.emptyPages.length > 0 && ocrEnabled()) {
     // Outside the try below: a cap error must re-queue the batch, not be
     // swallowed as a permanent OCR failure (which would drop these pages).
-    await chargeImportUnits(service, source.user_id, "ocr", range.emptyPages.length);
+    await chargeImportUnits(service, source.user_id, "ocr", range.emptyPages.length, new Date(), ocrProvider());
     try {
-      const ocrPages = await ocrPdfPages(bytes, range.emptyPages);
+      const ocrPages = await ocrPdfPages(bytes, range.emptyPages, source.page_count);
       pages = mergePages(range.pages, ocrPages);
     } catch (err) {
       // Transient OCR failure → let the pump re-queue and retry the whole batch.
-      if (err instanceof GeminiTransientError) throw err;
+      if (isTransient(err)) throw err;
       // Permanent OCR failure → skip these image pages (fall through, text only).
       console.error(`[polya-import] OCR failed for ${source.id}:`, err);
     }
@@ -518,7 +518,7 @@ async function advanceHtml(source: SourceRow, connection: Connection | null): Pr
   // Hash the normalized text (HTML rows previously stored no hash) so a
   // refresh can skip the rebuild when only the timestamp moved.
   const sha = await sha256Hex(new TextEncoder().encode(text).buffer as ArrayBuffer);
-  if (source.needs_refresh && source.content_sha256 && sha === source.content_sha256) {
+  if (source.needs_refresh && unchangedOutput(source, sha)) {
     await service
       .from("polya_sources")
       .update({ needs_refresh: false, status: "ready" })
@@ -538,6 +538,14 @@ async function advanceHtml(source: SourceRow, connection: Connection | null): Pr
 // Remove a source's derived output before a rebuild. Units first (they can
 // reference procedures), then procedures (steps cascade) — same order as
 // retry_failed.
+// A refresh may keep a source's existing units only when the bytes are
+// unchanged AND there are units to keep. A source that failed (or needs OCR)
+// before the refresh has none, so unchanged bytes still get a full rebuild;
+// otherwise a Canvas re-check would flip it to "ready" with nothing behind it.
+function unchangedOutput(source: SourceRow, sha: string): boolean {
+  return Boolean(source.content_sha256) && sha === source.content_sha256 && source.chunks_embedded > 0;
+}
+
 async function clearSourceOutput(sourceId: string): Promise<void> {
   await service.from("polya_content_units").delete().eq("source_id", sourceId);
   await service.from("polya_procedures").delete().eq("source_id", sourceId);
@@ -637,7 +645,7 @@ async function advanceMediaFetch(
   }
 
   const sha = await sha256Hex(transcript.bytes);
-  if (source.needs_refresh && source.content_sha256 && sha === source.content_sha256) {
+  if (source.needs_refresh && unchangedOutput(source, sha)) {
     await service
       .from("polya_sources")
       .update({ needs_refresh: false, status: "ready" })

@@ -87,6 +87,8 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "hqscope-scope-ops"
           settings: .github/claude/settings.json
+          # Puts the agent's transcript summary on the run page, so "why did it stop" has an answer.
+          display_report: "true"
           prompt: ${{ steps.prompt.outputs.text }}
           claude_args: |
             --max-turns ${{ steps.prompt.outputs.turns }}
@@ -94,12 +96,24 @@ jobs:
             ${{ steps.prompt.outputs.mcp }}
             --allowedTools "Read,Grep,Glob,Edit,Write,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(deno:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run list:*),Bash(gh run view:*),mcp__scope-ops__progress,mcp__scope-ops__reply,mcp__scope-ops__ask"
 
+      # The full transcript, for when the report and the issue comment aren't enough.
+      - name: Save transcript
+        if: always() && steps.claude.outputs.execution_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript-${{ github.run_id }}
+          path: ${{ steps.claude.outputs.execution_file }}
+          retention-days: 14
+          if-no-files-found: ignore
+
       # Labels are the source of truth for the Slack card. Settle the end state here so a run
       # never leaves the ticket stuck in "running".
       - name: Settle status
         if: always()
         env:
           OUTCOME: ${{ steps.claude.outcome }}
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           status=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name | select(startswith("status:"))][0] // ""')
@@ -117,9 +131,21 @@ jobs:
           elif [ "$OUTCOME" = "success" ]; then target=needs-noel
           else target=failed
           fi
-          # Comment first: the label change is what tells Slack, and it relays the newest note.
-          if [ "$target" = "needs-noel" ] && [ "$flagged" = "0" ] && [ -z "$pr" ]; then
-            gh issue comment "$ISSUE" --body "NEEDS-NOEL: the fix run finished without opening a PR or explaining why. Check the run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The agent didn't explain itself: post what it last said and what it was refused, so
+          # nobody has to dig through the run log to find out why it stopped.
+          if [ -z "$pr" ] && [ "$flagged" = "0" ]; then
+            body="$RUNNER_TEMP/run-report.md"
+            if [ "$target" = "failed" ]; then
+              echo "The fix run failed before it finished." > "$body"
+            else
+              echo "NEEDS-NOEL: the fix run ended without opening a PR or posting its findings here." > "$body"
+            fi
+            if [ -n "${EXEC:-}" ] && [ -f "$EXEC" ]; then
+              jq -rs -f .github/claude/run-report.jq "$EXEC" >> "$body" || echo "(Couldn't read the transcript.)" >> "$body"
+            fi
+            printf '\nRun log and transcript: %s\n' "$RUN_URL" >> "$body"
+            # Comment first: the label change is what tells Slack, and it relays the newest note.
+            gh issue comment "$ISSUE" --body-file "$body"
           fi
           current=$(gh issue view "$ISSUE" --json labels --jq "[.labels[].name | select(startswith(\"status:\") and . != \"status:$target\")] | join(\",\")")
           gh issue edit "$ISSUE" --add-label "status:$target" ${current:+--remove-label "$current"}

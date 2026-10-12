@@ -37,11 +37,14 @@ export const UNITS_PER_DOLLAR = 10_000;
 /** Deliberately low chars-per-token, so token estimates run high. */
 export const CHARS_PER_TOKEN_ESTIMATE = 3;
 
-/** List prices, dollars per million tokens (Anthropic cached 2026-06-24;
- * Gemini per plans/september-2026/COSTS.md). gemini-2.5-pro's >200k-token
- * tier doesn't apply: gemini-proxy caps input at 120k characters. */
+/** List prices, dollars per million tokens (Anthropic cached 2026-06-24,
+ * Haiku 5.5 added 2026-10-07; Gemini per plans/september-2026/COSTS.md).
+ * gemini-2.5-pro's >200k-token tier doesn't apply: gemini-proxy caps input at
+ * 120k characters. Haiku 5.5's >100k-token rate card doesn't apply either:
+ * every caller here stays well under 100k tokens per request. */
 export const MODEL_PRICES: Readonly<Record<string, { input: number; output: number }>> = {
   "claude-haiku-4-5": { input: 1, output: 5 },
+  "claude-haiku-5-5": { input: 0.1, output: 0.5 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-sonnet-5": { input: 2, output: 10 },
   "gemini-2.5-flash": { input: 0.3, output: 2.5 },
@@ -53,10 +56,12 @@ export const MODEL_PRICES: Readonly<Record<string, { input: number; output: numb
 /** Anything not listed above is priced like an Opus-tier model. */
 export const UNKNOWN_MODEL_PRICE = { input: 5, output: 25 } as const;
 
-/** One image-only page through gemini-2.5-flash OCR: about 340 tokens in and
- * typically ~500 out ($0.00135, COSTS.md §1). 20 units ($0.002) leaves room
- * for dense pages without charging the full 8,192-token output ceiling, which
- * would make one course's OCR look like a day's budget. */
+/** One image-only page through OCR. Polya's primary is claude-haiku-5-5:
+ * about 1,730 tokens in and ~320 out, ~$0.0003 (data/ocr-eval, 2026-10-07);
+ * its Gemini Flash-Lite fallback is ~$0.0005, and the old gemini-2.5-flash
+ * path was $0.00135 (COSTS.md §1). 20 units ($0.002) covers any of them with
+ * room for dense pages, without charging the full 8,192-token output ceiling,
+ * which would make one course's OCR look like a day's budget. */
 export const OCR_PAGE_UNITS = 20;
 
 /** TypeSafe publishes no per-request price we've verified; a flat placeholder. */

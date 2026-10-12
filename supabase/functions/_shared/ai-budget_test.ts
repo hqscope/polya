@@ -130,6 +130,9 @@ Deno.test("estimateModelUnits charges input plus the full output allowance", () 
   assert(estimateModelUnits("claude-haiku-4-5", 3_000, 4_096) === 215, "haiku agent turn");
   // A full Course Brain corpus on Haiku: 900k chars = 300k tokens = $0.30, plus $0.02048.
   assert(estimateModelUnits("claude-haiku-4-5", 900_000, 4_096) === 3_205, "haiku full corpus");
+  // Haiku 5.5 tutor tier: 3,000 chars = 1,000 tokens at $0.10/M = $0.0001; 4,096 out at $0.50/M
+  // = $0.002048. Total $0.002148 -> 21.48 units -> 22.
+  assert(estimateModelUnits("claude-haiku-5-5", 3_000, 4_096) === 22, "haiku 5.5 agent turn");
   // gemini-2.5-flash syllabus parse: 15k chars = 5k tokens = $0.0015; 8,192 out = $0.02048.
   assert(estimateModelUnits("gemini-2.5-flash", 15_000, 8_192) === 220, "flash parse");
   // Sonnet 5 tutor ceiling: 42k chars = 14k tokens = $0.028; 2,048 out = $0.02048.

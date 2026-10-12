@@ -12,6 +12,7 @@ available, use them; that thread is where they look, not the issue.
   steps finish (each call replaces the whole list). Keep step text short and concrete.
 - When you finish, call `reply` with what you found or did, in a few lines: the answer, or the
   change and how you checked it. Link the PR if you opened one. Don't paste the whole PR body.
+  A `reply` goes only to Slack. It does not replace the issue comment in §5: post both.
 - If the request is a **question** that needs no code change, look in the repo (and with
   `gh issue list` / `gh pr list` if it's about work in progress), answer it with `reply` and
   `answered: true`, and stop. No branch, no PR, no NEEDS-NOEL.
@@ -87,9 +88,21 @@ If the fix needs any of the following, don't do it. Comment on the issue with a 
   - **Not verified**: what you could not check, and why
   - `Fixes #{{ISSUE}}`
 
-## 5. Report back
+## 5. Report back, every run
 
-Comment on the issue with the PR link and the same Verified / Not verified lists.
+Your last action in every run is a comment on the issue, whatever happened. The only exceptions
+are a question answered with `reply` and `answered: true`, and a question sent with `ask`.
+
+- Write the comment to a file with the Write tool, then post it with
+  `gh issue comment {{ISSUE}} --body-file <file>`. `--body "$(…)"` is denied.
+- **You opened a PR:** link it, and give the same Verified / Not verified lists.
+- **You didn't:** start the comment with `NEEDS-NOEL:`, then say what you found (root cause or
+  best lead, with file and line), what you tried, and exactly what stops you. If a command you
+  needed was denied, name it.
+- Leave turns for this. When you are about ten turns from the limit, stop investigating and
+  write the comment with what you have.
+
+A run that ends without this comment is reported as a failure, and the work in it is lost.
 
 Never claim a check you didn't run. "Tests pass" means you ran them in this session and saw them
 pass. If something can only be checked on a device or in a browser by a person, list it under

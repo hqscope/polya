@@ -1,6 +1,7 @@
 // Ingestion helpers shared by the import pump: turn extracted text into
 // embedded content_units, and advance a single source one bounded step.
 import { chunkPages, splitTextIntoChunks } from "./chunker.ts";
+import { sanitizeDbText } from "./db-text.ts";
 import type { PageText } from "./chunker.ts";
 import { embedTexts, toVectorLiteral } from "./embeddings.ts";
 import { service, STORAGE_BUCKET } from "./service.ts";
@@ -23,6 +24,7 @@ export interface SourceRow {
   page_count: number;
   pages_parsed: number;
   chunks_embedded: number;
+  size_bytes?: number | null;
   attempts?: number;
   status: string;
   content_sha256?: string | null;
@@ -65,10 +67,10 @@ export async function embedAndInsertChunks(
     ordinal: ordinalStart + i,
     unit_type: "chunk",
     content_role: source.content_role,
-    heading_path: chunk.heading ?? source.title,
+    heading_path: sanitizeDbText(chunk.heading ?? source.title),
     page_start: chunk.pageStart,
     page_end: chunk.pageEnd,
-    content: chunk.text,
+    content: sanitizeDbText(chunk.text),
     embedding: toVectorLiteral(embedded[i]!.values),
     embedding_model: embedded[i]!.model,
   }));

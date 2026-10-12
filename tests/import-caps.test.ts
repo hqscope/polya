@@ -49,6 +49,15 @@ test("caps are sized for ordinary term imports", () => {
   assert.ok(DAILY_OCR_PAGE_CAP * 0.00135 < 3, "worst-case OCR spend under $3/user/day");
 });
 
+test("OCR pages draw on the budget of the provider that transcribes them", async () => {
+  const { client, calls } = meter();
+  await chargeImportUnits(client, "u1", "ocr", 2, new Date(), "anthropic");
+  assert.equal(calls[1].fn, "claim_ai_budget");
+  assert.equal(calls[1].p_provider, "anthropic");
+  await chargeImportUnits(client, "u1", "ocr", 2);
+  assert.equal(calls[3].p_provider, "gemini", "defaults to gemini");
+});
+
 test("charges the right bucket and units, and allows up to the cap", async () => {
   const { client, calls } = meter();
   await chargeImportUnits(client, "u1", "pages", 10);

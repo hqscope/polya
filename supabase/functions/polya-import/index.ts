@@ -19,6 +19,7 @@ import {
   type KalturaMediaEntry,
 } from "../_shared/kaltura.ts";
 import { classifyContentRole } from "../_shared/content-roles.ts";
+import { LARGE_PDF_BYTES } from "../_shared/ocr-pages.ts";
 import { diffSources, type EnumeratedSource, type ExistingSourceRow } from "../_shared/enumerate.ts";
 import {
   advanceClaimedSource,
@@ -929,12 +930,16 @@ async function runPump(userId: string, token: string): Promise<void> {
       const sources = (claimed ?? []) as SourceRow[];
 
       if (sources.length > 0) {
-        await Promise.all(
-          sources.map(async (source) => {
-            const connection = await resolveConnection(userId, source, connByCourse);
-            await advanceClaimedSource(source, connection, ctx);
-          }),
-        );
+        // Large PDFs are parsed twice per batch (page count, then text) and
+        // each parse holds the whole file; three at once is over the 250 MB
+        // isolate limit, so they go one at a time after the small ones.
+        const advanceOne = async (source: SourceRow) => {
+          const connection = await resolveConnection(userId, source, connByCourse);
+          await advanceClaimedSource(source, connection, ctx);
+        };
+        const large = sources.filter((source) => (source.size_bytes ?? 0) > LARGE_PDF_BYTES);
+        await Promise.all(sources.filter((source) => !large.includes(source)).map(advanceOne));
+        for (const source of large) await advanceOne(source);
         // A PDF cycle spends most of an invocation's CPU allowance, so hand off
         // right after it rather than at the wall budget (pump-plan.ts).
         if (nextPumpMove(sources, Date.now(), deadline) === "handoff") {

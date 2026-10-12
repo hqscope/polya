@@ -32,7 +32,10 @@ import {
 } from "../_shared/prompts.ts";
 
 const TUTOR_MODEL = "claude-sonnet-5";
-const MODEL_ALLOWLIST = new Set(["claude-sonnet-5", "claude-haiku-4-5"]);
+// Haiku 5.5 is the cheap tier (10x cheaper than Haiku 4.5). Its safety
+// classifiers can decline a turn with stop_reason "refusal" and it has no
+// server-side fallback, so streamTutor retries a declined turn on TUTOR_MODEL.
+const MODEL_ALLOWLIST = new Set(["claude-sonnet-5", "claude-haiku-5-5"]);
 const MAX_TOKENS = 2048;
 const HISTORY_TURNS = 12;
 // COSTS.md §2's upper case (charter, ~24 evidence units, 12-turn history) is
@@ -359,39 +362,59 @@ function streamTutor(args: StreamArgs): Response {
       };
 
       try {
-        const anthropic = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            model: args.model,
-            max_tokens: MAX_TOKENS,
-            stream: true,
-            system: args.systemBlocks,
-            messages: args.messages,
-          }),
-        });
+        // The cheap tier (Haiku 5.5) can decline a turn with stop_reason
+        // "refusal" and has no server-side fallback. If nothing has reached the
+        // student yet, redo the turn on the default model; a decline after text
+        // has streamed ends the turn instead.
+        const models = args.model === TUTOR_MODEL ? [args.model] : [args.model, TUTOR_MODEL];
+        let refused = false;
+        for (const model of models) {
+          refused = false;
+          const anthropic = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "x-api-key": ANTHROPIC_KEY,
+              "anthropic-version": "2023-06-01",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: MAX_TOKENS,
+              stream: true,
+              system: args.systemBlocks,
+              messages: args.messages,
+            }),
+          });
 
-        if (!anthropic.ok || !anthropic.body) {
-          const detail = await anthropic.text().catch(() => "");
-          console.error("[polya-tutor] anthropic error:", anthropic.status, detail.slice(0, 300));
+          if (!anthropic.ok || !anthropic.body) {
+            const detail = await anthropic.text().catch(() => "");
+            console.error("[polya-tutor] anthropic error:", anthropic.status, detail.slice(0, 300));
+            controller.enqueue(
+              sse("error", { error: "The tutor is unavailable right now. Please try again." }),
+            );
+            controller.close();
+            return;
+          }
+
+          for await (const evt of parseAnthropicSse(anthropic.body)) {
+            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+              const text = evt.delta.text ?? "";
+              if (headerDone) emitText(text);
+              else consumeHeader(text);
+            } else if (evt.type === "message_delta") {
+              if (evt.usage) usage = evt.usage;
+              if (evt.delta?.stop_reason === "refusal") refused = true;
+            }
+          }
+          if (!refused || displayText || headerBuffer) break;
+          console.warn(`[polya-tutor] ${model} declined the turn; retrying on ${TUTOR_MODEL}`);
+        }
+        if (refused) {
           controller.enqueue(
-            sse("error", { error: "The tutor is unavailable right now. Please try again." }),
+            sse("error", { error: "The tutor couldn't answer that one. Try asking it a different way." }),
           );
           controller.close();
           return;
-        }
-
-        for await (const evt of parseAnthropicSse(anthropic.body)) {
-          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-            if (headerDone) emitText(evt.delta.text);
-            else consumeHeader(evt.delta.text);
-          } else if (evt.type === "message_delta" && evt.usage) {
-            usage = evt.usage;
-          }
         }
         // Stream ended while still buffering (single-line reply).
         if (!headerDone) {
@@ -522,7 +545,11 @@ async function persist(args: StreamArgs, assistantText: string, usage: unknown):
 // Minimal SSE parser for the Anthropic event stream.
 async function* parseAnthropicSse(
   body: ReadableStream<Uint8Array>,
-): AsyncGenerator<{ type: string; delta?: { type: string; text: string }; usage?: unknown }> {
+): AsyncGenerator<{
+  type: string;
+  delta?: { type?: string; text?: string; stop_reason?: string | null };
+  usage?: unknown;
+}> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
