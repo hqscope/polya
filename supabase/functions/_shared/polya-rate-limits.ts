@@ -64,6 +64,10 @@ export function importRateWindow(action: unknown): { bucket: string; limit: numb
 export const IMPORT_MAX_BODY_BYTES = 1_048_576;
 export const IMPORT_MAX_BODY_BYTES_WITH_SEED_FIXTURE = 25 * 1_048_576;
 
+// polya-canvas's whole-request body cap (2.13). Every body there is a Canvas
+// base_url/token pair or a connection id, a few hundred bytes.
+export const CANVAS_MAX_BODY_BYTES = 64 * 1024;
+
 // ---------------------------------------------------------------------------
 // polya-tutor: the hourly window under usage.ts's 100 turns/day, matching
 // claude-proxy's 40/hr.

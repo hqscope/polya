@@ -15,6 +15,8 @@ import {
 } from "../_shared/connections.ts";
 import { outcomeForError } from "../_shared/token-audit.ts";
 import { CanvasAuthError, CanvasClient, CanvasUrlError, normalizeBaseUrl } from "../_shared/canvas.ts";
+import { readJsonCapped } from "../_shared/read-json-capped.ts";
+import { CANVAS_MAX_BODY_BYTES } from "../_shared/polya-rate-limits.ts";
 
 const SOURCE = "polya-canvas";
 
@@ -22,9 +24,6 @@ const SOURCE = "polya-canvas";
 // the deployed project.
 const ALLOW_INSECURE_CANVAS = Deno.env.get("POLYA_ALLOW_INSECURE_CANVAS") === "1";
 
-// Every request body here is a Canvas base_url/token pair or a connection id —
-// well under this. Catches an unbounded-body abuse path (platform-hardening 2.13/R-21).
-const MAX_BODY_BYTES = 64 * 1024;
 
 interface ConnectBody {
   action: "connect";
@@ -45,14 +44,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
     return json({ error: "Method not allowed", code: "method_not_allowed" }, 405);
   }
 
-  try {
-    const rawBody = await request.text();
-    if (new TextEncoder().encode(rawBody).length > MAX_BODY_BYTES) {
-      return json({ error: "Request body is too large.", code: "payload_too_large" }, 413);
-    }
+  // Capped before anything buffers or parses it: a declared or streamed body
+  // over the cap is refused and drained (the edge runtime holds the response
+  // until the request body is read), and malformed JSON is a 400, not the
+  // generic 500 below (same guard as polya-import, A-9/R-21).
+  const parsed = await readJsonCapped<Body>(request, CANVAS_MAX_BODY_BYTES);
+  if (!parsed.ok) {
+    return parsed.status === 413
+      ? json({ error: "That request is too large.", code: "too_large" }, 413)
+      : json({ error: "Invalid request body.", code: "bad_request" }, 400);
+  }
+  const body = parsed.value;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "Invalid request body.", code: "bad_request" }, 400);
+  }
 
+  try {
     const user = await requireAuthUser(request);
-    const body = JSON.parse(rawBody) as Body;
 
     switch (body.action) {
       case "connect":

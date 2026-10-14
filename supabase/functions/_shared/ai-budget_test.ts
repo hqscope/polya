@@ -175,6 +175,10 @@ Deno.test("aiBusyResponse is a friendly 503 with CORS headers and Retry-After", 
   assert(body.error === AI_BUSY_MESSAGE, "friendly message");
   assert(body.code === "busy", "busy code");
   assert(!/budget|quota|server|token|supabase/i.test(AI_BUSY_MESSAGE), "no mechanics in the copy");
+  assert(
+    AI_BUSY_MESSAGE === "Things are busier than usual right now. Try again in a little while.",
+    "COPY.md ai.busy.default, exactly",
+  );
 });
 
 Deno.test("secondsUntilUtcReset counts down to UTC midnight", () => {

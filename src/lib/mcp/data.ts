@@ -9,6 +9,7 @@ import {
   normalizeMode,
 } from "../../../supabase/functions/_shared/study-rules.ts";
 import type { PolicyMode } from "../../../supabase/functions/_shared/prompts.ts";
+import { searchFailureMessage } from "./format.ts";
 
 export class ToolError extends Error {}
 
@@ -87,17 +88,9 @@ export async function searchCourse(
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ course_id: courseId, query, exclude_roles: excludedRolesFor(mode) }),
   });
-  if (response.status === 429) {
-    throw new ToolError("Polya's search limit for now has been reached. Try again later.");
-  }
-  if (response.status === 503) {
-    throw new ToolError("Polya is busy right now. Try again in a few minutes.");
-  }
-  if (response.status === 400) {
-    throw new ToolError("That search couldn't run. Keep the question under 2,000 characters.");
-  }
   if (!response.ok) {
-    throw new ToolError("Search failed. Try again in a moment.");
+    const errorBody: unknown = await response.json().catch(() => null);
+    throw new ToolError(searchFailureMessage(response.status, errorBody));
   }
   const body = (await response.json()) as { results?: SearchHit[] };
   return body.results ?? [];

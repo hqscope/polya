@@ -128,9 +128,9 @@ export async function claimAiBudget(
   }
 }
 
-// TODO(copy): no COPY.md key yet; Fable to confirm. Says what's happening to
-// the user, not why.
-export const AI_BUSY_MESSAGE = "Things are busier than usual right now. Please try again later.";
+// COPY.md §11 `ai.busy.default`: the one string every AI function returns with
+// `code: "busy"`. Says what's happening to the user, not why.
+export const AI_BUSY_MESSAGE = "Things are busier than usual right now. Try again in a little while.";
 
 /** Seconds until the next UTC midnight, when the daily budgets reset. */
 export function secondsUntilUtcReset(now: Date = new Date()): number {

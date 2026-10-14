@@ -7,7 +7,14 @@ import {
   wwwAuthenticateHeader,
   authorizationServerMetadataUrl,
 } from "../src/lib/mcp/config.ts";
-import { locationOf, toRulesResult, toSearchResult, searchText } from "../src/lib/mcp/format.ts";
+import {
+  locationOf,
+  searchFailureMessage,
+  toRulesResult,
+  toSearchResult,
+  searchText,
+} from "../src/lib/mcp/format.ts";
+import { AI_BUSY_POLYA_SEARCH } from "../src/lib/ai-busy.ts";
 import type { CourseRow, SearchHit } from "../src/lib/mcp/data.ts";
 
 const course: CourseRow = {
@@ -67,4 +74,15 @@ test("location labels", () => {
   assert.equal(locationOf(hit({})), "pages 4–5");
   assert.equal(locationOf(hit({ page_end: 4 })), "page 4");
   assert.equal(locationOf(hit({ page_start: null, page_end: null, unit_type: "page_chunk" })), "page chunk");
+});
+
+test("search failures: busy is matched on the code and uses the shared search copy", () => {
+  const busy = { error: "Things are busier than usual right now. Try again in a little while.", code: "busy" };
+  assert.equal(searchFailureMessage(503, busy), AI_BUSY_POLYA_SEARCH);
+  // An unrelated 503 (no busy code) is a plain failure, not a busy period.
+  assert.equal(searchFailureMessage(503, null), "Search failed. Try again in a moment.");
+  assert.equal(searchFailureMessage(503, { code: "internal" }), "Search failed. Try again in a moment.");
+  assert.match(searchFailureMessage(429, { code: "rate_limited" }), /search limit/);
+  assert.match(searchFailureMessage(400, { code: "bad_request" }), /2,000 characters/);
+  assert.equal(searchFailureMessage(500, null), "Search failed. Try again in a moment.");
 });

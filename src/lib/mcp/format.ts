@@ -4,6 +4,7 @@
 //
 // Pure: Node tests import this file.
 import { siteUrl } from "../seo.ts";
+import { AI_BUSY_POLYA_SEARCH, isAiBusy } from "../ai-busy.ts";
 import { rulesReminder, studyRulesFor } from "../../../supabase/functions/_shared/study-rules.ts";
 import type { PolicyMode } from "../../../supabase/functions/_shared/prompts.ts";
 import type { CourseRow, SearchHit } from "./data.ts";
@@ -128,4 +129,17 @@ export function searchText(result: SearchResult): string {
     .map((p) => `[${p.n}] ${p.title} (${p.location})\n${p.text}`)
     .join("\n\n");
   return `${result.rules_summary}\n\n${body}`;
+}
+
+/**
+ * The tool error for a polya-search response that wasn't ok. The AI-busy
+ * refusal (R-5) is matched on its `code`, not the status, so it always reads
+ * as COPY.md's `ai.busy.polya.search`, and an unrelated 503 (e.g. the
+ * function failing to boot) doesn't claim to be a busy period.
+ */
+export function searchFailureMessage(status: number, body: unknown): string {
+  if (isAiBusy(body)) return AI_BUSY_POLYA_SEARCH;
+  if (status === 429) return "Polya's search limit for now has been reached. Try again later.";
+  if (status === 400) return "That search couldn't run. Keep the question under 2,000 characters.";
+  return "Search failed. Try again in a moment.";
 }

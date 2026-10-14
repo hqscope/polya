@@ -30,10 +30,9 @@ export const AI_BUSY_POLYA_TUTOR =
 // `ai.busy.polya.tutor.short`: same, for a one-line banner.
 export const AI_BUSY_POLYA_TUTOR_SHORT = "Polya can't answer right now. Try again in a little while.";
 
-// `ai.busy.polya.search`: inline under the search field. No client calls
-// polya-search yet (grepped 2026-09-24 — no consumer in `src/`), so this is
-// unused until a search UI is wired, the same way Lectra's typesafe-decide
-// classification waits for a consumer.
+// `ai.busy.polya.search`: inline under the search field. The web app has no
+// search UI yet; the connector's search tool (`lib/mcp/format.ts`
+// searchFailureMessage) returns it when polya-search answers busy.
 export const AI_BUSY_POLYA_SEARCH =
   "Search is taking a break. Things are busier than usual, so try again in a little while.";
 
