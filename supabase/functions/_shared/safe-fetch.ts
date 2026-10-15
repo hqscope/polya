@@ -121,11 +121,19 @@ export async function fetchPublic(
       await response.body?.cancel().catch(() => {});
       return { status: response.status, url: url.toString(), contentType: "", bytes: new Uint8Array() };
     }
+    let bytes: Uint8Array;
+    try {
+      bytes = await readCapped(response, opts.maxBytes);
+    } catch (error) {
+      // A connection dropped (or timed out) mid-body is worth another try.
+      if (error instanceof ResponseTooLargeError) throw error;
+      throw new TransientFetchError(`body read failed: ${String(error).slice(0, 200)}`);
+    }
     return {
       status: response.status,
       url: url.toString(),
       contentType: (response.headers.get("Content-Type") ?? "").toLowerCase(),
-      bytes: await readCapped(response, opts.maxBytes),
+      bytes,
     };
   }
   throw new UnsafeUrlError("Too many redirects.");

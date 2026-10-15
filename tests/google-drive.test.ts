@@ -99,6 +99,15 @@ test("fetchPublic follows public redirects, refuses private hops, and caps the b
   const big = fakeFetch(() => new Response("x".repeat(100)));
   await assert.rejects(fetchPublic(big.fn, "https://site.edu/a", { maxBytes: 10 }), ResponseTooLargeError);
 
+  // The connection drops halfway through the body: retry later, don't fail the file.
+  const dropped = fakeFetch(() => new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new Uint8Array([1, 2]));
+      controller.error(new TypeError("error reading a body from connection"));
+    },
+  })));
+  await assert.rejects(fetchPublic(dropped.fn, "https://site.edu/a", { maxBytes: 10 }), TransientFetchError);
+
   const busy = fakeFetch(() => new Response("slow down", { status: 429 }));
   await assert.rejects(fetchPublic(busy.fn, "https://site.edu/a", { maxBytes: 10 }), TransientFetchError);
 
