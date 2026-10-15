@@ -37,6 +37,7 @@ import {
   saveThreadId,
 } from "../lib/link.ts";
 import { STUDENT_ATTRIBUTE } from "../lib/student.ts";
+import { extractPage, isSendOutput, MAX_ATTACHMENT_BYTES, SEND_DOCUMENT_TOOL } from "../lib/documents.ts";
 
 // The parts of the Chat SDK thread and message this file uses. eve types them with the optional
 // `chat` package, which this project doesn't install, so they are spelled out here.
@@ -109,6 +110,37 @@ export default photonIMessageChannel({
   },
   // webhookSecret is left unset on purpose: the channel falls back to IMESSAGE_WEBHOOK_SECRET.
   userName: "Polya",
+
+  events: {
+    // send_document returns a short-lived link to the student's own PDF; post it (or one page of it) as
+    // an attachment. Event handlers run at least once, so each tool call is sent only once per thread.
+    async "action.result"(event, channel) {
+      const result = (event as { result?: { kind?: string; toolName?: string; callId?: string; output?: unknown } }).result;
+      if (result?.kind !== "tool-result" || result.toolName !== SEND_DOCUMENT_TOOL) return;
+      const output = result.output;
+      if (!isSendOutput(output) || !channel.thread) return;
+      const state = channel.state as { sentDocumentCalls?: string[] };
+      const callId = result.callId ?? output.url;
+      if (state.sentDocumentCalls?.includes(callId)) return;
+      state.sentDocumentCalls = [...(state.sentDocumentCalls ?? []).slice(-20), callId];
+      try {
+        const res = await fetch(output.url, { signal: AbortSignal.timeout(20_000) });
+        if (!res.ok) throw new Error(`download ${res.status}`);
+        const whole = new Uint8Array(await res.arrayBuffer());
+        const bytes = output.page ? await extractPage(whole, output.page) : whole;
+        if (!bytes) throw new Error("page out of range");
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new Error("too large");
+        const caption = output.page ? `${output.title}, page ${output.page}` : output.title;
+        await channel.thread.post({
+          markdown: caption,
+          files: [{ data: Buffer.from(bytes), filename: output.filename, mimeType: "application/pdf" }],
+        } as never);
+      } catch (error) {
+        console.error(`${LOG} sending document failed:`, error instanceof Error ? error.message : error);
+        await channel.thread.post({ markdown: "I couldn't attach that file just now. Try asking again in a minute." } as never).catch(() => {});
+      }
+    },
+  },
 
   async onMessage(ctx, rawMessage) {
     const thread: ReplyThread = ctx.thread;
