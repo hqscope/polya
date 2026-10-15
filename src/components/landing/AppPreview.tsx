@@ -1,4 +1,4 @@
-import { PolyaLockup } from "@/components/Logo";
+import { PolyaWordmark } from "@/components/Logo";
 
 // Static replica of the study screen, framed in browser chrome, for the
 // landing hero. Pure presentation — every string is illustrative.
@@ -18,7 +18,7 @@ export default function AppPreview() {
       <div className="flex text-left">
         <div className="hidden w-[148px] shrink-0 flex-col gap-0.5 border-r border-line-soft bg-bg px-2 py-3 sm:flex">
           <span className="flex px-2 py-0.5">
-            <PolyaLockup size={12} />
+            <PolyaWordmark size={12} />
           </span>
           <span className="mt-2.5 rounded-[5px] border border-line-soft bg-surface px-2 py-1 text-[11px] font-semibold">
             My courses

@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { ImageResponse } from "next/og";
 
+import { WORDMARK } from "@/components/Logo";
 import { landingTitle } from "@/lib/seo";
 
 export const alt = landingTitle;
@@ -12,7 +13,8 @@ export const contentType = "image/png";
 // Satori needs raw static font buffers (no variable fonts, no woff2) — hence
 // the vendored TTFs in assets/fonts. Layout rules: flexbox only, and every
 // multi-child div needs an explicit display: "flex".
-// Logo row: plum tile + mark, lowercase "polya" at -0.03em.
+// Logo row: the outlined wordmark (CSS variables don't work here, so colors
+// are spelled out).
 export default async function OpengraphImage() {
   const [bold, regular] = await Promise.all([
     readFile(join(process.cwd(), "assets/fonts/InstrumentSans-Bold.ttf")),
@@ -33,33 +35,16 @@ export default async function OpengraphImage() {
           fontFamily: "Instrument Sans",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <div
-            style={{
-              width: 56,
-              height: 56,
-              borderRadius: 12,
-              background: "#5A2147",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
+        <div style={{ display: "flex" }}>
+          <svg
+            width={(52 * WORDMARK.width) / WORDMARK.height}
+            height={52}
+            viewBox={`0 0 ${WORDMARK.width} ${WORDMARK.height}`}
           >
-            <svg width="23.6" height="29.3" viewBox="0 0 54 67">
-              <path fill="#FBEFF5" fillRule="evenodd" d="M0 27a27 27 0 1 0 54 0a27 27 0 1 0 -54 0ZM14 27a13 13 0 1 0 26 0a13 13 0 1 0 -26 0Z" />
-              <path fill="#FBEFF5" d="M0 27H14V60A7 7 0 0 1 0 60Z" />
-            </svg>
-          </div>
-          <div
-            style={{
-              fontSize: 40,
-              fontWeight: 700,
-              letterSpacing: "-0.03em",
-              color: "#191f1d",
-            }}
-          >
-            polya
-          </div>
+            <path fill="#5A2147" fillRule="evenodd" d={WORDMARK.ring} />
+            <path fill="#5A2147" d={WORDMARK.stem} />
+            <path fill="#191f1d" d={WORDMARK.olya} />
+          </svg>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>

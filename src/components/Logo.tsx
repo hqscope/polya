@@ -1,14 +1,22 @@
 import Link from "next/link";
 
-// Polya logo: the p-bubble mark + "polya" wordmark (Instrument Sans Bold,
-// -0.03em tracking, outlined so it renders identically everywhere).
-// `size` is the lockup height in px. Mark = --brand (#5A2147); wordmark =
-// currentColor (text-ink).
+// Polya logo. The wordmark is "polya" with the brand mark (a lowercase p
+// drawn as a speech bubble) standing in for the "p", followed by "olya" in
+// Instrument Sans Bold at -0.03em, outlined so it renders identically
+// everywhere. The mark's ring matches the font's x-height (o: y 21–74 at
+// 100px) and keeps the font's p→o spacing. Mark = --brand (#5A2147);
+// "olya" = currentColor (text-ink).
 const MARK_RING = "M0 27a27 27 0 1 0 54 0a27 27 0 1 0 -54 0ZM14 27a13 13 0 1 0 26 0a13 13 0 1 0 -26 0Z";
 const MARK_STEM = "M0 27H14V60A7 7 0 0 1 0 60Z";
-const LOCKUP_RING = "M0 37a37 37 0 1 0 74 0a37 37 0 1 0 -74 0ZM19.19 37a17.81 17.81 0 1 0 35.63 0a17.81 17.81 0 1 0 -35.63 0Z";
-const LOCKUP_STEM = "M0 37H19.19V82.22A9.59 9.59 0 0 1 0 82.22Z";
-const WORDMARK = "M138.4 74Q131.1 74 126.7 70.6Q122.3 67.2 121.5 61.3L122.3 61.2L122.3 93.5L107.3 93.5L107.3 22L122 22L122 33.3L121.1 33.1Q122.2 27.5 127.1 24.25Q132 21 139.2 21Q146.1 21 151.15 24.25Q156.2 27.5 158.95 33.4Q161.7 39.3 161.7 47.3Q161.7 55.4 158.8 61.4Q155.9 67.4 150.7 70.7Q145.5 74 138.4 74ZM134.2 62Q139.5 62 142.8 58.2Q146.1 54.4 146.1 47.4Q146.1 40.4 142.75 36.7Q139.4 33 134 33Q128.8 33 125.45 36.75Q122.1 40.5 122.1 47.5Q122.1 54.5 125.45 58.25Q128.8 62 134.2 62ZM192.3 74Q183.9 74 177.55 70.65Q171.2 67.3 167.65 61.25Q164.1 55.2 164.1 47.3Q164.1 39.4 167.65 33.5Q171.2 27.6 177.55 24.3Q183.9 21 192.3 21Q200.8 21 207.15 24.3Q213.5 27.6 217 33.5Q220.5 39.4 220.5 47.3Q220.5 55.2 216.95 61.25Q213.4 67.3 207.05 70.65Q200.7 74 192.3 74ZM192.3 62.2Q195.8 62.2 198.65 60.4Q201.5 58.6 203.2 55.25Q204.9 51.9 204.9 47.2Q204.9 40.3 201.25 36.55Q197.6 32.8 192.3 32.8Q187 32.8 183.35 36.6Q179.7 40.4 179.7 47.2Q179.7 51.9 181.4 55.25Q183.1 58.6 185.95 60.4Q188.8 62.2 192.3 62.2ZM225.5 73L225.5 1L240.5 1L240.5 73L225.5 73ZM252.1 93.5L266.2 62.3L268.8 58L282 22L298 22L267.1 93.5L252.1 93.5ZM262.9 72L243.3 22L259.5 22L275.6 67.6L262.9 72ZM330 73Q329.4 70.8 329.15 68.3Q328.9 65.8 328.9 62.5L328.5 62.5L328.5 38.4Q328.5 35.3 326.45 33.55Q324.4 31.8 320.4 31.8Q316.6 31.8 314.35 33.1Q312.1 34.4 311.4 36.9L297.1 36.9Q298.1 30 304.2 25.5Q310.3 21 320.9 21Q331.9 21 337.7 25.9Q343.5 30.8 343.5 40L343.5 62.5Q343.5 65 343.85 67.55Q344.2 70.1 345 73L330 73ZM312.2 74Q304.6 74 300.1 70.15Q295.6 66.3 295.6 59.9Q295.6 52.8 300.95 48.45Q306.3 44.1 315.9 42.8L330.8 40.7L330.8 49.4L318.4 51.3Q314.4 51.9 312.5 53.5Q310.6 55.1 310.6 57.9Q310.6 60.4 312.4 61.7Q314.2 63 317.2 63Q321.9 63 325.2 60.45Q328.5 57.9 328.5 54.5L329.9 62.5Q327.7 68.2 323.2 71.1Q318.7 74 312.2 74Z";
+
+// Exported for places that can't use CSS variables (the share image).
+export const WORDMARK = {
+  width: 236.3,
+  height: 93.5,
+  ring: "M0 47.5a26.5 26.5 0 1 0 53 0a26.5 26.5 0 1 0 -53 0ZM13.74 47.5a12.76 12.76 0 1 0 25.52 0a12.76 12.76 0 1 0 -25.52 0Z",
+  stem: "M0 47.5H13.74V79.89A6.87 6.87 0 0 1 0 79.89Z",
+  olya: "M83.6 74Q75.2 74 68.85 70.65Q62.5 67.3 58.95 61.25Q55.4 55.2 55.4 47.3Q55.4 39.4 58.95 33.5Q62.5 27.6 68.85 24.3Q75.2 21 83.6 21Q92.1 21 98.45 24.3Q104.8 27.6 108.3 33.5Q111.8 39.4 111.8 47.3Q111.8 55.2 108.25 61.25Q104.7 67.3 98.35 70.65Q92 74 83.6 74ZM83.6 62.2Q87.1 62.2 89.95 60.4Q92.8 58.6 94.5 55.25Q96.2 51.9 96.2 47.2Q96.2 40.3 92.55 36.55Q88.9 32.8 83.6 32.8Q78.3 32.8 74.65 36.6Q71 40.4 71 47.2Q71 51.9 72.7 55.25Q74.4 58.6 77.25 60.4Q80.1 62.2 83.6 62.2ZM116.8 73L116.8 1L131.8 1L131.8 73L116.8 73ZM143.4 93.5L157.5 62.3L160.1 58L173.3 22L189.3 22L158.4 93.5L143.4 93.5ZM154.2 72L134.6 22L150.8 22L166.9 67.6L154.2 72ZM221.3 73Q220.7 70.8 220.45 68.3Q220.2 65.8 220.2 62.5L219.8 62.5L219.8 38.4Q219.8 35.3 217.75 33.55Q215.7 31.8 211.7 31.8Q207.9 31.8 205.65 33.1Q203.4 34.4 202.7 36.9L188.4 36.9Q189.4 30 195.5 25.5Q201.6 21 212.2 21Q223.2 21 229 25.9Q234.8 30.8 234.8 40L234.8 62.5Q234.8 65 235.15 67.55Q235.5 70.1 236.3 73L221.3 73ZM203.5 74Q195.9 74 191.4 70.15Q186.9 66.3 186.9 59.9Q186.9 52.8 192.25 48.45Q197.6 44.1 207.2 42.8L222.1 40.7L222.1 49.4L209.7 51.3Q205.7 51.9 203.8 53.5Q201.9 55.1 201.9 57.9Q201.9 60.4 203.7 61.7Q205.5 63 208.5 63Q213.2 63 216.5 60.45Q219.8 57.9 219.8 54.5L221.2 62.5Q219 68.2 214.5 71.1Q210 74 203.5 74Z",
+};
 
 export function PolyaMark({
   className = "",
@@ -25,17 +33,18 @@ export function PolyaMark({
   );
 }
 
-// The lockup alone, no link — for static replicas like the landing preview.
-export function PolyaLockup({ size = 16 }: { size?: number }) {
+// The wordmark alone, no link — for static replicas like the landing preview.
+// `size` is the height in px.
+export function PolyaWordmark({ size = 16 }: { size?: number }) {
   return (
     <svg
-      viewBox="0 0 345 93.5"
-      style={{ height: size, width: (size * 345) / 93.5 }}
+      viewBox={`0 0 ${WORDMARK.width} ${WORDMARK.height}`}
+      style={{ height: size, width: (size * WORDMARK.width) / WORDMARK.height }}
       aria-hidden="true"
     >
-      <path fill="var(--brand, #5A2147)" fillRule="evenodd" d={LOCKUP_RING} />
-      <path fill="var(--brand, #5A2147)" d={LOCKUP_STEM} />
-      <path fill="currentColor" d={WORDMARK} />
+      <path fill="var(--brand, #5A2147)" fillRule="evenodd" d={WORDMARK.ring} />
+      <path fill="var(--brand, #5A2147)" d={WORDMARK.stem} />
+      <path fill="currentColor" d={WORDMARK.olya} />
     </svg>
   );
 }
@@ -55,7 +64,7 @@ export default function Logo({
       aria-label="Polya"
       className={`inline-flex shrink-0 items-center text-ink hover:text-ink ${className}`}
     >
-      <PolyaLockup size={size} />
+      <PolyaWordmark size={size} />
     </Link>
   );
 }
