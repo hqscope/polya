@@ -17,7 +17,7 @@ export default function MarketingFooter() {
     <footer>
       <div className="mx-auto flex max-w-[1120px] flex-col gap-2.5 px-7 pt-7 pb-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <Logo className="text-[13.5px]" />
+          <Logo size={14} />
           <div className="flex flex-wrap items-center gap-[18px]">
             {FOOTER_LINKS.map(({ href, label }) => (
               <Link

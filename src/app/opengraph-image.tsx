@@ -12,6 +12,7 @@ export const contentType = "image/png";
 // Satori needs raw static font buffers (no variable fonts, no woff2) — hence
 // the vendored TTFs in assets/fonts. Layout rules: flexbox only, and every
 // multi-child div needs an explicit display: "flex".
+// Logo row: plum tile + mark, lowercase "polya" at -0.03em.
 export default async function OpengraphImage() {
   const [bold, regular] = await Promise.all([
     readFile(join(process.cwd(), "assets/fonts/InstrumentSans-Bold.ttf")),
@@ -38,26 +39,26 @@ export default async function OpengraphImage() {
               width: 56,
               height: 56,
               borderRadius: 12,
-              background: "#191f1d",
-              color: "#fafcfb",
+              background: "#5A2147",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 34,
-              fontWeight: 700,
             }}
           >
-            P
+            <svg width="23.6" height="29.3" viewBox="0 0 54 67">
+              <path fill="#FBEFF5" fillRule="evenodd" d="M0 27a27 27 0 1 0 54 0a27 27 0 1 0 -54 0ZM14 27a13 13 0 1 0 26 0a13 13 0 1 0 -26 0Z" />
+              <path fill="#FBEFF5" d="M0 27H14V60A7 7 0 0 1 0 60Z" />
+            </svg>
           </div>
           <div
             style={{
               fontSize: 40,
               fontWeight: 700,
-              letterSpacing: "-0.02em",
+              letterSpacing: "-0.03em",
               color: "#191f1d",
             }}
           >
-            Polya
+            polya
           </div>
         </div>
 
