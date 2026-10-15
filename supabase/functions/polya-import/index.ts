@@ -1,5 +1,5 @@
-// polya-import — enumerate a Canvas course into queued sources, report import
-// progress, and register manually-uploaded transcripts.
+// polya-import — enumerate a Canvas course (or a course website) into queued
+// sources, report import progress, and register manually-uploaded transcripts.
 // Actions: start | status | add_upload. (The `process` state machine that
 // fetches/parses/chunks/embeds is added in M3.)
 import { corsHeaders, json } from "../_shared/cors.ts";
@@ -44,6 +44,17 @@ import {
   importRateWindow,
 } from "../_shared/polya-rate-limits.ts";
 import { readJsonCapped } from "../_shared/read-json-capped.ts";
+import {
+  crawlCourseSite,
+  MAX_HTML_BYTES,
+  normalizeSiteUrl,
+  planSiteSources,
+  type SiteCrawl,
+  SiteUnreachableError,
+  SiteUrlError,
+} from "../_shared/course-site.ts";
+import { fetchPublic } from "../_shared/safe-fetch.ts";
+import { WEB_ORIGINS } from "../_shared/web-sources.ts";
 import { bearerToken, secretMatches } from "../_shared/service-role.ts";
 import { nextPumpMove } from "../_shared/pump-plan.ts";
 
@@ -213,6 +224,15 @@ interface ExtensionRegisterSourceBody {
   course_id: string;
   source: ExtensionManifestEntry & { storage_path: string };
 }
+// Course website import: crawl a public course site into queued sources, onto
+// an existing course (course_id) or a new website-only course. `force`
+// re-checks every source ("Check for updates").
+interface SiteStartBody {
+  action: "site_start";
+  url: string;
+  course_id?: string;
+  force?: boolean;
+}
 
 type Body =
   | StartBody
@@ -226,7 +246,8 @@ type Body =
   | DeleteCourseBody
   | SeedFixtureBody
   | ExtensionImportStartBody
-  | ExtensionRegisterSourceBody;
+  | ExtensionRegisterSourceBody
+  | SiteStartBody;
 
 Deno.serve(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") {
@@ -296,6 +317,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
         return await handleExtensionImportStart(user.id, body);
       case "extension_register_source":
         return await handleExtensionRegisterSource(user.id, body);
+      case "site_start":
+        return await handleSiteStart(user.id, body);
       default:
         return json({ error: "Unknown action", code: "bad_request" }, 400);
     }
@@ -682,25 +705,7 @@ async function enumerateCourse(
     .eq("user_id", userId)
     .eq("course_id", polyaCourseId);
   const diff = diffSources(sources, (existingRows ?? []) as ExistingSourceRow[], force);
-
-  if (diff.toInsert.length > 0) {
-    // ignoreDuplicates kept as a race guard (two concurrent starts).
-    const { error: insertError } = await service
-      .from("polya_sources")
-      .upsert(diff.toInsert, {
-        onConflict: "user_id,course_id,origin,canvas_id",
-        ignoreDuplicates: true,
-      });
-    if (insertError) {
-      throw new Error(`source insert failed: ${insertError.message}`);
-    }
-  }
-  for (const { id, patch } of [...diff.toRefresh, ...diff.toPatch]) {
-    const { error: patchError } = await service.from("polya_sources").update(patch).eq("id", id);
-    if (patchError) {
-      console.error(`[polya-import] source patch failed for ${id}:`, patchError.message);
-    }
-  }
+  await applySourceDiff(diff);
 
   console.log(
     `[polya-import] course ${courseId} diff:`,
@@ -719,6 +724,135 @@ async function enumerateCourse(
     queued: diff.toInsert.length,
     refreshed: diff.toRefresh.length,
   };
+}
+
+// Write an enumeration diff: insert new sources, re-queue changed ones, patch
+// cheap metadata on the rest.
+async function applySourceDiff(diff: ReturnType<typeof diffSources>): Promise<void> {
+  if (diff.toInsert.length > 0) {
+    // ignoreDuplicates kept as a race guard (two concurrent starts).
+    const { error: insertError } = await service
+      .from("polya_sources")
+      .upsert(diff.toInsert, {
+        onConflict: "user_id,course_id,origin,canvas_id",
+        ignoreDuplicates: true,
+      });
+    if (insertError) {
+      throw new Error(`source insert failed: ${insertError.message}`);
+    }
+  }
+  for (const { id, patch } of [...diff.toRefresh, ...diff.toPatch]) {
+    const { error: patchError } = await service.from("polya_sources").update(patch).eq("id", id);
+    if (patchError) {
+      console.error(`[polya-import] source patch failed for ${id}:`, patchError.message);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Course website import
+//
+// Crawls the site's pages (course-site.ts) and queues them, the PDFs it hosts,
+// and the Google files it links; the background worker fetches each one
+// (web-sources.ts). Re-running it diffs like a Canvas re-import. Website-only
+// courses are keyed `site:<start url>` in canvas_course_id so they stay unique
+// per student without colliding with Canvas ids.
+// ---------------------------------------------------------------------------
+const SITE_COURSE_PREFIX = "site:";
+
+async function fetchSiteHtml(url: string): Promise<{ url: string; html: string } | null> {
+  const response = await fetchPublic(fetch, url, {
+    maxBytes: MAX_HTML_BYTES,
+    accept: "text/html,application/xhtml+xml",
+  }).catch(() => null);
+  if (!response || response.status !== 200 || !/html/.test(response.contentType)) return null;
+  return { url: response.url, html: new TextDecoder().decode(response.bytes) };
+}
+
+async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Response> {
+  let startUrl: string;
+  try {
+    startUrl = normalizeSiteUrl(String(body.url ?? ""));
+  } catch (error) {
+    if (error instanceof SiteUrlError) return json({ error: error.message, code: "bad_request" }, 400);
+    throw error;
+  }
+  if (body.course_id) await assertCourseOwned(userId, body.course_id);
+  await assertStorageRoom(service, userId, STORAGE_BUCKET, null);
+
+  let crawl: SiteCrawl;
+  try {
+    crawl = await crawlCourseSite(startUrl, fetchSiteHtml);
+  } catch (error) {
+    if (error instanceof SiteUnreachableError) {
+      return json(
+        { error: "We couldn't open that website. Check the address and try again.", code: "site_unreachable" },
+        400,
+      );
+    }
+    throw error;
+  }
+
+  let courseId = body.course_id ?? null;
+  if (courseId) {
+    const { error } = await service
+      .from("polya_courses")
+      .update({ site_url: startUrl, import_status: "importing" })
+      .eq("id", courseId)
+      .eq("user_id", userId);
+    if (error) throw new Error(`course update failed: ${error.message}`);
+  } else {
+    const { data, error } = await service
+      .from("polya_courses")
+      .upsert(
+        {
+          user_id: userId,
+          canvas_course_id: `${SITE_COURSE_PREFIX}${startUrl}`,
+          name: crawl.courseName ?? new URL(startUrl).host,
+          site_url: startUrl,
+          import_status: "importing",
+        },
+        { onConflict: "user_id,canvas_course_id" },
+      )
+      .select("id")
+      .single();
+    if (error || !data) throw new Error(`course upsert failed: ${error?.message}`);
+    courseId = data.id as string;
+  }
+
+  const sources = planSiteSources(crawl, userId, courseId);
+  const { data: existingRows } = await service
+    .from("polya_sources")
+    .select("id, origin, canvas_id, canvas_updated_at, status, due_at, title, canvas_url")
+    .eq("user_id", userId)
+    .eq("course_id", courseId)
+    .in("origin", Array.from(WEB_ORIGINS));
+  const diff = diffSources(sources, (existingRows ?? []) as ExistingSourceRow[], Boolean(body.force));
+  await applySourceDiff(diff);
+
+  // Counts only (no content), like the Canvas enumeration log.
+  console.log(
+    `[polya-import] site ${new URL(startUrl).host} enumerated:`,
+    JSON.stringify({
+      pages: crawl.pages.length,
+      hosted_files: crawl.files.length,
+      google_files: crawl.googleFiles.length,
+      queued_total: sources.length,
+      inserted: diff.toInsert.length,
+      refreshed: diff.toRefresh.length,
+      patched: diff.toPatch.length,
+    }),
+  );
+
+  await kickPump(userId);
+  return json({
+    course_id: courseId,
+    site_url: startUrl,
+    source_count: sources.length,
+    queued: diff.toInsert.length,
+    refreshed: diff.toRefresh.length,
+    progress: await countProgress(userId, courseId),
+  });
 }
 
 async function handleStatus(userId: string, courseId: string): Promise<Response> {
@@ -934,10 +1068,18 @@ async function runPump(userId: string, token: string): Promise<void> {
         // each parse holds the whole file; three at once is over the 250 MB
         // isolate limit, so they go one at a time after the small ones.
         const advanceOne = async (source: SourceRow) => {
-          const connection = await resolveConnection(userId, source, connByCourse);
+          // Course-website sources never need the Canvas token.
+          const connection = WEB_ORIGINS.has(source.origin)
+            ? null
+            : await resolveConnection(userId, source, connByCourse);
           await advanceClaimedSource(source, connection, ctx);
         };
-        const large = sources.filter((source) => (source.size_bytes ?? 0) > LARGE_PDF_BYTES);
+        // A web PDF's size is unknown until its first fetch, so it counts as
+        // large until then.
+        const large = sources.filter((source) =>
+          (source.size_bytes ?? 0) > LARGE_PDF_BYTES ||
+          (source.size_bytes == null && source.source_kind === "pdf" && WEB_ORIGINS.has(source.origin))
+        );
         await Promise.all(sources.filter((source) => !large.includes(source)).map(advanceOne));
         for (const source of large) await advanceOne(source);
         // A PDF cycle spends most of an invocation's CPU allowance, so hand off

@@ -11,6 +11,7 @@ import {
 import PolicyPanel from "@/components/policy/PolicyPanel";
 import RefreshMaterials from "@/components/import/RefreshMaterials";
 import TranscriptUpload from "@/components/import/TranscriptUpload";
+import CourseSiteImport from "@/components/import/CourseSiteImport";
 
 export const metadata = { title: "Course materials" };
 
@@ -35,7 +36,7 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
     await Promise.all([
       supabase
         .from("polya_courses")
-        .select("name, canvas_course_id, connection_id")
+        .select("name, canvas_course_id, connection_id, site_url")
         .eq("id", id)
         .maybeSingle(),
       supabase
@@ -59,6 +60,11 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
   // A failed load shows the retry notice, not an empty or missing course.
   if (courseError || sourcesError) throw new Error("materials-unavailable");
   if (!course) redirect("/app");
+
+  // Website-only courses are keyed "site:<address>" and have nothing in Canvas to re-check.
+  const canvasCourseId = String(course.canvas_course_id ?? "");
+  const fromCanvas =
+    canvasCourseId !== "" && !canvasCourseId.startsWith("fixture-") && !canvasCourseId.startsWith("site:");
 
   const total = (sources ?? []).length;
   const ready = (sources ?? []).filter((s) => s.status === "ready").length;
@@ -92,6 +98,10 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
           initialMode={(policy?.mode as Mode) ?? "guided"}
           initialNote={policy?.instructor_note ?? null}
         />
+
+        <div className="border-t border-line pt-6">
+          <CourseSiteImport courseId={id} siteUrl={(course.site_url as string | null) ?? null} />
+        </div>
 
         <div className="border-t border-line pt-6">
           <TranscriptUpload courseId={id} />
@@ -132,10 +142,9 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
             <span className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">
               Everything Polya is studying
             </span>
-            {course.canvas_course_id &&
-            !String(course.canvas_course_id).startsWith("fixture-") ? (
+            {fromCanvas ? (
               <RefreshMaterials
-                canvasCourseId={String(course.canvas_course_id)}
+                canvasCourseId={canvasCourseId}
                 connectionId={(course.connection_id as string | null) ?? null}
               />
             ) : null}
@@ -161,8 +170,8 @@ export default async function MaterialsPage({ params }: { params: Promise<{ id: 
             ))}
             {total === 0 ? (
               <p className="m-0 py-[9px] text-[12.5px] text-ink3">
-                Nothing here yet — connect Canvas or upload a transcript to get
-                started.
+                Nothing here yet — connect Canvas, add your course website, or
+                upload a transcript to get started.
               </p>
             ) : null}
           </div>

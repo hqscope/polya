@@ -11,6 +11,10 @@ test("isAnswerKeyLike flags solution/answer-key material", () => {
   assert.ok(isAnswerKeyLike({ title: "Problem Set 3 Answer Key" }));
   assert.ok(isAnswerKeyLike({ title: "ps3_solutions.pdf" }));
   assert.ok(isAnswerKeyLike({ folderPath: "Exams > Solutions" }));
+  assert.ok(isAnswerKeyLike({ title: "su26_final_sols" }));
+  assert.ok(isAnswerKeyLike({ title: "hw3 sols" }));
+  assert.ok(isAnswerKeyLike({ title: "fa25_mt2_sol" }));
+  assert.ok(!isAnswerKeyLike({ title: "Solstice reading" }));
   assert.ok(!isAnswerKeyLike({ title: "Lecture 7 — Cellular Respiration" }));
 });
 

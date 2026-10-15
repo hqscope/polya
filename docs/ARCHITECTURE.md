@@ -47,6 +47,25 @@ Next.js 16 app (this repo)                              Supabase (shared project
    uploads (.txt, Kaltura .json, .vtt, .srt) on the course page; they parse into timed
    `transcript_segment` units. A Kaltura auto-fetch adapter is roadmap.
 
+5. **Course websites** — for classes that live on their own site instead of Canvas (e.g.
+   `ds100.org/fa26`), `polya-import {action:site_start, url, course_id?}` crawls the site
+   (`_shared/course-site.ts`): pages on the start URL's host under its path are fetched and
+   followed (≤120), same-host pages outside it that they link (shared course notes) are queued but
+   not followed, and the crawl queues hosted PDFs (≤40 per page, so a past-exams table doesn't
+   swamp the course) and Google Drive / Slides / Docs links. That yields three origins:
+   `site_page` (html), `site_file` (pdf), and `drive_file` (pdf, `canvas_id` = `slides:<id>`).
+   With `course_id` the site is added to an existing (Canvas) course; without it a website-only
+   course is created, keyed `site:<url>` in `canvas_course_id`. `polya_courses.site_url` remembers
+   the address for "Check for updates" (`force`). Every fetch goes through `_shared/safe-fetch.ts`
+   (https only, public host on every redirect hop, size cap, timeout). Google files are fetched
+   from the public export first; a file shared only inside the school's Google domain is read
+   through the student's **platform Drive grant** (`_shared/drive-grant.ts`): the `google_tokens`
+   `drive` row the Scope extension's "Connect Google Drive" stores, encrypted with the same
+   `POLYA_TOKEN_KEY`, refreshed in memory with `GOOGLE_DRIVE_CLIENT_ID/_SECRET`, gated by the
+   `google_drive_full_read` flag, and audited per file in `google_drive_audit` (client `polya`).
+   Polya never writes or refreshes-into that row. Without a usable grant, school-only files fail
+   with a plain message and "retry failed" picks them up later.
+
 Re-import (`start` on an already-imported course, or "Check for updates" which passes `force`)
 diffs enumeration against stored rows (`_shared/enumerate.ts`): new sources are queued; a source
 whose `canvas_updated_at` moved (or any source, under `force`) is marked `needs_refresh` and

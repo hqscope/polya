@@ -2,6 +2,7 @@
 import { getAuthenticatedAppUser } from "@/lib/auth/session";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
 import ConnectFlow from "@/components/import/ConnectFlow";
+import CourseSiteImport from "@/components/import/CourseSiteImport";
 
 export const metadata = { title: "Connect Canvas" };
 
@@ -27,6 +28,10 @@ export default async function ConnectPage() {
         </div>
 
         <ConnectFlow />
+
+        <div className="border-t border-line pt-6">
+          <CourseSiteImport />
+        </div>
       </div>
     </div>
   );

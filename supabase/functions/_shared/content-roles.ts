@@ -18,7 +18,8 @@ export function isAnswerKeyLike(signals: RoleSignals): boolean {
   // `ps3_solutions.pdf` or `hw4_answers.pdf` still trip the `\b`-anchored
   // patterns (an underscore is a word char, so it wouldn't otherwise boundary).
   const blob = `${raw} ${raw.replace(/_/g, " ")}`;
-  return /\b(answer\s*key|answers?|solutions?|worksheet\s+solutions?|sol\.?pdf|dps_sol)\b/.test(
+  // `sol` / `sols` are the usual filename shorthand (hw3_sols.pdf, fa25_mt2_sol.pdf).
+  return /\b(answer\s*key|answers?|solutions?|sols?|worksheet\s+solutions?|sol\.?pdf|dps_sol)\b/.test(
     blob,
   );
 }

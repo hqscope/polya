@@ -28,6 +28,13 @@ export function sourceStatusClass(status: string): string {
   }
 }
 
+// Where a source's "open the original" link goes, in the student's words.
+export function sourceOpenLabel(origin: string | null | undefined): string {
+  if (origin === "drive_file") return "Open in Google Drive";
+  if (origin === "site_page" || origin === "site_file") return "Open on the course website";
+  return "Open in Canvas";
+}
+
 // Short badge text for a source. Lecture videos read as "video" regardless of
 // the underlying transcript format; otherwise "transcript_vtt" → "vtt".
 export function sourceKindBadge(kind: string, origin?: string): string {

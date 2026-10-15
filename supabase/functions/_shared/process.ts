@@ -1,7 +1,8 @@
 // The import pump's single bounded step: claim one source, advance it one
 // stage (fetch -> parse a page batch -> chunk+embed -> ready), persist cursors,
 // return whether more work remains. Sources with a pre-set storage_path
-// (fixtures, uploaded transcripts) skip the Canvas fetch.
+// (fixtures, uploaded transcripts) skip the Canvas fetch; course-website
+// sources (web-sources.ts) fetch from the open web instead of Canvas.
 import { service } from "./service.ts";
 import { CONNECTIONS_TABLE } from "./connections.ts";
 import { transientBackoffMs, type TransientHint } from "./backoff.ts";
@@ -38,6 +39,9 @@ import {
 import { parseTranscript } from "./transcripts.ts";
 import { extractProcedures } from "./procedures.ts";
 import { embedAndInsertTranscript, embedAndInsertProcedures } from "./ingest-extra.ts";
+import type { DriveReader } from "./drive-grant.ts";
+import { newDriveReader } from "./drive-grant-store.ts";
+import { fetchSitePageText, fetchWebPdf, WEB_ORIGINS } from "./web-sources.ts";
 
 // Small page window so a step that has to OCR every page still fits the edge
 // CPU/wall budget (OCR is ~seconds/page); text-only PDFs just take a few more
@@ -80,10 +84,26 @@ export interface Connection {
 // persisted or logged.
 export interface AdvanceContext {
   kalturaSessions: Map<string, Promise<KalturaSession | null>>;
+  // Reads school-only Google files as the student; access tokens are cached
+  // for this invocation only. Created on first use.
+  driveReader?: DriveReader;
 }
 
 export function newAdvanceContext(): AdvanceContext {
   return { kalturaSessions: new Map() };
+}
+
+function driveReaderFor(ctx?: AdvanceContext): () => DriveReader {
+  return () => {
+    if (!ctx) return newDriveReader();
+    ctx.driveReader ??= newDriveReader();
+    return ctx.driveReader;
+  };
+}
+
+// Web fetches hand back exact-length Uint8Arrays; the PDF helpers take ArrayBuffer.
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 // Legacy single-step pump: claim one source and advance it. Kept for the
@@ -322,7 +342,8 @@ async function advance(
   if (source.origin === "canvas_media" && (!source.storage_path || source.needs_refresh)) {
     return await advanceMediaFetch(source, connection, ctx);
   }
-  if (source.source_kind === "pdf") return await advancePdf(source, connection);
+  if (source.origin === "site_page") return await advanceSitePage(source);
+  if (source.source_kind === "pdf") return await advancePdf(source, connection, ctx);
   if (source.source_kind === "html") return await advanceHtml(source, connection);
   if (source.source_kind.startsWith("transcript_")) return await advanceTranscript(source);
   await failSource(source.id, `Unsupported source kind: ${source.source_kind}`);
@@ -333,19 +354,26 @@ async function advance(
 // parsing -> extract next page batch, chunk+embed, bump cursor -> ready.
 // A queued source with needs_refresh re-fetches its bytes, hash-compares, and
 // rebuilds its units only when the content actually changed.
-async function advancePdf(source: SourceRow, connection: Connection | null): Promise<string> {
+async function advancePdf(
+  source: SourceRow,
+  connection: Connection | null,
+  ctx?: AdvanceContext,
+): Promise<string> {
   if (source.status === "queued") {
     const refreshing = Boolean(source.needs_refresh);
-    // Refreshing a Canvas source must re-fetch from Canvas, not reuse the
-    // stored copy — the stored copy is exactly what might be stale.
-    const fetchFromCanvas =
-      connection && source.canvas_url && (!source.storage_path || refreshing);
+    // Refreshing a remote source must re-fetch it, not reuse the stored copy
+    // — the stored copy is exactly what might be stale. Course-website files
+    // come from the open web; everything else with a URL comes from Canvas.
+    const fromWeb = WEB_ORIGINS.has(source.origin);
+    const fetchRemote =
+      (fromWeb || connection) && source.canvas_url && (!source.storage_path || refreshing);
 
-    if (fetchFromCanvas) {
-      const client = new CanvasClient(connection.base_url, connection.access_token, {
-        allowInsecure: connection.allow_insecure,
-      });
-      const bytes = await client.downloadFile(source.canvas_url!);
+    if (fetchRemote) {
+      const bytes = fromWeb
+        ? toArrayBuffer(await fetchWebPdf(source, driveReaderFor(ctx)))
+        : await new CanvasClient(connection!.base_url, connection!.access_token, {
+          allowInsecure: connection!.allow_insecure,
+        }).downloadFile(source.canvas_url!);
       const sha = await sha256Hex(bytes);
       if (refreshing && unchangedOutput(source, sha)) {
         // Timestamp moved but bytes didn't — keep the existing units.
@@ -507,6 +535,19 @@ async function advanceHtml(source: SourceRow, connection: Connection | null): Pr
     }
   }
 
+  return await finishTextSource(source, text);
+}
+
+// Course-website page: fetch its main-content text, then the same
+// hash-checked chunk+embed as a Canvas page. Single step.
+async function advanceSitePage(source: SourceRow): Promise<string> {
+  const text = source.canvas_url ? await fetchSitePageText(source.canvas_url) : null;
+  return await finishTextSource(source, text);
+}
+
+// Shared tail of the text-source paths: skip near-empty text, keep units when
+// a refresh finds the same text, otherwise (re)build them.
+async function finishTextSource(source: SourceRow, text: string | null): Promise<string> {
   if (!text || text.trim().length < 20) {
     await service
       .from("polya_sources")

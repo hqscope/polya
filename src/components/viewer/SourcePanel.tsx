@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { sourceLocation } from "@/lib/citations";
+import { sourceOpenLabel } from "@/lib/sources";
 import type { TutorSource } from "@/lib/sse";
 
 interface Props {
@@ -14,6 +15,7 @@ interface Props {
 }
 
 interface SourceMeta {
+  origin: string;
   source_kind: string;
   storage_path: string | null;
   canvas_url: string | null;
@@ -39,7 +41,7 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
 
       const { data: row } = await supabase
         .from("polya_sources")
-        .select("source_kind, storage_path, canvas_url, title")
+        .select("origin, source_kind, storage_path, canvas_url, title")
         .eq("id", source.source_id)
         .maybeSingle();
       if (cancelled) return;
@@ -151,7 +153,7 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
               rel="noreferrer"
               className="text-[12px] font-semibold"
             >
-              Open in Canvas ↗
+              {sourceOpenLabel(meta.origin)} ↗
             </a>
           ) : null}
         </div>

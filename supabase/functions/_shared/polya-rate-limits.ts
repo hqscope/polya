@@ -11,8 +11,8 @@ export const HOUR_SECONDS = 3_600;
 // polya-import: three hourly windows, so the web app's progress polling can't
 // crowd out what a student actually does, and a script can't spend the room
 // the cheap reads need on starting imports.
-//   - start:   enumerating Canvas, registering an upload, retrying or
-//              deleting a course. Human-initiated, a handful per session.
+//   - start:   enumerating Canvas or a course website, registering an
+//              upload, retrying or deleting a course. Human-initiated, a handful per session.
 //   - kick:    resuming the background worker. The sidebar indicator retries
 //              it every 4 s while an import is paused; the 15-minute sweeper
 //              revives a stalled worker anyway, so a refused kick costs
@@ -43,6 +43,7 @@ const START_ACTIONS = new Set([
   "retry_failed",
   "delete_course",
   "seed_fixture",
+  "site_start",
 ]);
 
 export function importActionClass(action: unknown): ImportActionClass {
