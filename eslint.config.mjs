@@ -11,6 +11,8 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "supabase/functions/**",
+    // Separate app (Polya on iMessage) with its own package and checks.
+    "imessage/**",
   ]),
 ]);
 

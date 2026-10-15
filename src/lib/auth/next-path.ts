@@ -13,8 +13,10 @@ export const DEFAULT_NEXT_PATH = "/app";
  */
 export const NEXT_PATH_HEADER = "x-polya-next-path";
 
-// Only places inside the signed-in app are valid destinations.
-const ALLOWED_PREFIXES = ["/app"];
+// Only places inside the signed-in app are valid destinations, plus the page
+// that links a phone to Polya from the link Polya texts (it needs a signed-in
+// student and must come back with its `?code=`).
+const ALLOWED_PREFIXES = ["/app", "/connect/imessage"];
 
 const MAX_LENGTH = 2048;
 
@@ -29,8 +31,9 @@ const PARSE_BASE = "https://next-path.invalid";
  * and newlines and read `\` as `/`, which can turn `/\evil.com` into
  * `//evil.com`). The path is then resolved against a dummy origin: it must
  * stay on that origin, and its resolved pathname (after `..` and `%2e%2e`
- * are applied) must be `/app` or under `/app/`. The resolved form is what's
- * returned, so what gets checked is what gets used.
+ * are applied) must be an allowed prefix or under it (`/app`, `/app/...`).
+ * The resolved form is what's returned, so what gets checked is what gets
+ * used.
  */
 export function sanitizeNextPath(raw: string | null | undefined): string {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_LENGTH) {
