@@ -8,7 +8,7 @@ This is its own deployable, separate from the Polya web app and from the scope-o
 
 ```text
 agent/
-  agent.ts                 model (direct Anthropic, claude-sonnet-5-5); eve's default tools off
+  agent.ts                 model (direct Anthropic, claude-haiku-5-5); eve's default tools off
   instructions/
     check-ins.md           how to word a "[polya check-in]" message
     core.md                who Polya is on iMessage and how it helps

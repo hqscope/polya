@@ -55,6 +55,10 @@ const SEARCH_HOURLY_BUCKET = "polya-search:hour";
 const SEARCH_DAILY_LIMIT = 600; // polya-rate-limits.ts SEARCH_DAILY_LIMIT
 const SEARCH_DAILY_BUCKET = "polya-search:day";
 
+/** Each student's original files. Signed links last a week, long enough to come back to a chat. */
+const DOCUMENTS_BUCKET = "polya_documents";
+const DOC_LINK_SECONDS = 7 * 24 * 60 * 60;
+
 const MATCH_RPC = "polya_match_units_for_user";
 const FTS_RPC = "polya_search_units_fts_for_user";
 
@@ -301,7 +305,8 @@ async function lexicalFallback(
   return rankLexical(terms, Array.from(byId.values()), PASSAGES_MAX);
 }
 
-/** Titles and Canvas links for the passages' sources, read under the same student filter. */
+/** Titles and links for the passages' sources, read under the same student filter. PDFs get a signed
+ * link to the student's own copy (opens right in iMessage); everything else keeps its Canvas link. */
 async function sourceMeta(
   db: SupabaseClient,
   studentId: string,
@@ -312,7 +317,7 @@ async function sourceMeta(
   if (ids.length === 0) return new Map();
   const { data, error } = await db
     .from("polya_sources")
-    .select("id, title, canvas_url")
+    .select("id, title, canvas_url, storage_path, source_kind")
     .eq("user_id", studentId)
     .eq("course_id", courseId)
     .in("id", ids);
@@ -321,10 +326,31 @@ async function sourceMeta(
     console.error(`[search] source details failed (${errorCode(error)})`);
     return new Map();
   }
+  const sources = rows<{
+    id: string;
+    title: string;
+    canvas_url: string | null;
+    storage_path: string | null;
+    source_kind: string;
+  }>(data);
+  // Only the student's own objects: these paths come from rows already filtered by user_id.
+  const pdfPaths = sources.filter((r) => r.source_kind === "pdf" && r.storage_path).map((r) => r.storage_path as string);
+  const signed = new Map<string, string>();
+  if (pdfPaths.length > 0) {
+    const { data: urls, error: signError } = await db.storage
+      .from(DOCUMENTS_BUCKET)
+      .createSignedUrls(pdfPaths, DOC_LINK_SECONDS);
+    if (signError) console.error(`[search] document links failed (${errorCode(signError)})`);
+    for (const u of urls ?? []) if (u.path && u.signedUrl) signed.set(u.path, u.signedUrl);
+  }
   return new Map(
-    rows<{ id: string; title: string; canvas_url: string | null }>(data).map((row) => [
+    sources.map((row) => [
       row.id,
-      { title: row.title, canvas_url: row.canvas_url },
+      {
+        title: row.title,
+        canvas_url: row.canvas_url,
+        doc_url: row.storage_path ? (signed.get(row.storage_path) ?? null) : null,
+      },
     ]),
   );
 }

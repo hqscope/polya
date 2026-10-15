@@ -385,3 +385,11 @@ describe("search copies", { skip: !existsSync(shared("rank.ts")) && "polya sourc
     }
   });
 });
+
+it("docLink opens the student's PDF at the passage's page, https only", async () => {
+  const { docLink } = await import("../agent/lib/search-format.ts");
+  assert.equal(docLink("https://x.supabase.co/storage/v1/object/sign/polya_documents/a.pdf?token=t", 7), "https://x.supabase.co/storage/v1/object/sign/polya_documents/a.pdf?token=t#page=7");
+  assert.equal(docLink("https://x.supabase.co/a.pdf?token=t", null), "https://x.supabase.co/a.pdf?token=t");
+  assert.equal(docLink("http://x/a.pdf", 2), null);
+  assert.equal(docLink(null, 2), null);
+});
