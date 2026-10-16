@@ -10,6 +10,12 @@
 // Item keys: `canvas:<polya source id>` or `gs:<course_id>:<assignment_id>`. A merged item keeps
 // its Canvas key as the primary key and remembers the Gradescope keys too, so a mark or a sent
 // reminder recorded under either key still counts.
+//
+// Proactive kinds: a graded Gradescope assignment gets its own entry (keyed by its gs: key, so each
+// part of a split assignment is announced once). A new assignment is a Canvas assignment Polya
+// picked up in the last day (not as part of a course import), or a Gradescope assignment with no
+// earlier row under any of its keys. A student's first run records every Gradescope assignment
+// they already have as a baseline (gradescopeBaseline), so connecting never floods them.
 import type { CheckInAssignment, SentCheckIn } from "./check-ins.ts";
 import { describeDue as describeLocalDue } from "./dates.ts";
 import type { GsAssignment, GsAssignmentStatus } from "./gradescope/types.ts";
@@ -23,6 +29,10 @@ export interface CanvasAssignmentInput {
   readonly title: string;
   /** ISO timestamp, or null when Canvas has no due date. */
   readonly dueAt: string | null;
+  /** When Polya first stored this assignment (polya_sources.created_at). */
+  readonly createdAt?: string | null;
+  /** When the student added its course to Polya (polya_courses.created_at). */
+  readonly courseCreatedAt?: string | null;
 }
 
 export interface ReminderItem {
@@ -38,6 +48,9 @@ export interface ReminderItem {
   /** Gradescope's status, or null when Gradescope has no matching assignment (or isn't connected). */
   readonly gradescopeStatus: GsAssignmentStatus | null;
   readonly url: string | null;
+  /** The Canvas side's createdAt and courseCreatedAt (null for Gradescope-only items). */
+  readonly canvasCreatedAt: string | null;
+  readonly courseCreatedAt: string | null;
 }
 
 export type MarkStatus = "done" | "snoozed";
@@ -60,6 +73,23 @@ export type ReminderMode = "reminders" | "legacy";
 const HOUR_MS = 60 * 60 * 1000;
 /** Canvas and Gradescope due dates further apart than this are never the same assignment. */
 const MAX_DUE_GAP_MS = 72 * HOUR_MS;
+
+export const NEW_ASSIGNMENT_RULES = {
+  /** A Canvas assignment counts as new while Polya stored it less than this long ago. */
+  recentMs: 24 * HOUR_MS,
+  /**
+   * ...and only when its course was added at least this long before it. Everything a course import
+   * brings in arrives with the course, and that isn't a newly posted assignment.
+   */
+  courseSettledMs: 24 * HOUR_MS,
+} as const;
+
+/**
+ * sent_at of a baseline row in polya_imessage_reminders: a Gradescope assignment the student already
+ * had on their first run. Never texted. Old enough that it never counts toward a day's cap or the
+ * gap between check-ins, and it still marks the assignment as seen.
+ */
+export const BASELINE_SENT_AT = "1970-01-01T00:00:00.000Z";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const ITEM_KEY = new RegExp(`^(canvas:${UUID}|gs:[^:\\s]{1,64}:[^:\\s]{1,64})$`, "i");
@@ -119,6 +149,8 @@ export function mergeAssignments(
       dueAt: row.dueAt ?? parts.find((part) => part.due_at)?.due_at ?? null,
       gradescopeStatus: combineStatus(parts.map((part) => part.status)),
       url: parts[0]?.url ?? null,
+      canvasCreatedAt: row.createdAt ?? null,
+      courseCreatedAt: row.courseCreatedAt ?? null,
     };
   });
   for (const gs of standalone) {
@@ -133,9 +165,47 @@ export function mergeAssignments(
       dueAt: gs.due_at,
       gradescopeStatus: gs.status,
       url: gs.url || null,
+      canvasCreatedAt: null,
+      courseCreatedAt: null,
     });
   }
   return items;
+}
+
+/**
+ * True for a Canvas assignment Polya stored in the last 24 hours, in a course the student added at
+ * least a day before it appeared: newly posted, not part of a course import.
+ */
+export function isNewlyPosted(item: Pick<ReminderItem, "canvasCreatedAt" | "courseCreatedAt">, now: Date): boolean {
+  const created = Date.parse(item.canvasCreatedAt ?? "");
+  const courseAdded = Date.parse(item.courseCreatedAt ?? "");
+  if (!Number.isFinite(created) || !Number.isFinite(courseAdded)) return false;
+  const age = now.getTime() - created;
+  return age >= 0 && age <= NEW_ASSIGNMENT_RULES.recentMs && created - courseAdded >= NEW_ASSIGNMENT_RULES.courseSettledMs;
+}
+
+/** True for a Gradescope assignment that came back graded with a score shown. */
+export function hasScore(gs: Pick<GsAssignment, "status" | "score">): gs is Pick<GsAssignment, "status"> & { score: string } {
+  return gs.status === "graded" && typeof gs.score === "string" && gs.score.trim().length > 0;
+}
+
+/**
+ * The rows that record a student's Gradescope assignments as already seen, written once on their
+ * first run (when they have no new_assignment row under a gs: key yet): a new_assignment row for
+ * each assignment, plus a graded row for each one already graded. With these in place only
+ * assignments that show up later are announced, and only grades that come back later are texted.
+ */
+export function gradescopeBaseline(gradescope: readonly GsAssignment[]): { itemKey: string; kind: "new_assignment" | "graded" }[] {
+  const rows: { itemKey: string; kind: "new_assignment" | "graded" }[] = [];
+  const seen = new Set<string>();
+  for (const gs of gradescope) {
+    const itemKey = gradescopeItemKey(gs);
+    if (seen.has(itemKey)) continue;
+    seen.add(itemKey);
+    rows.push({ itemKey, kind: "new_assignment" });
+    if (hasScore(gs)) rows.push({ itemKey, kind: "graded" });
+  }
+  return rows;
 }
 
 export function isSubmitted(status: GsAssignmentStatus | null): boolean {
@@ -173,6 +243,12 @@ export interface PrepareCheckInsInput {
   readonly userId: string;
   readonly mode: ReminderMode;
   readonly items: readonly ReminderItem[];
+  /**
+   * The student's Gradescope assignments when graded and new-on-Gradescope check-ins are on: their
+   * baseline is recorded and `sent` includes it. Null or omitted turns both off (Gradescope not
+   * connected or unreadable, legacy mode, or the database doesn't take the new kinds yet).
+   */
+  readonly gradescope?: readonly GsAssignment[] | null;
   readonly marks: readonly AssignmentMark[];
   /** Earlier sends. In "reminders" mode sourceId is an item key; in "legacy" mode a source id. */
   readonly sent: readonly SentCheckIn[];
@@ -181,13 +257,17 @@ export interface PrepareCheckInsInput {
 
 /**
  * Turns reminder items into selectCheckIns input: drops submitted, done and snoozed items, keys
- * each assignment the way its mode claims it, and folds sends recorded under a merged item's
- * other keys onto its primary key so dedupe sees them.
+ * each assignment the way its mode claims it, flags newly posted ones, adds one graded entry per
+ * Gradescope score, and folds sends recorded under a merged item's other keys onto its primary key
+ * so dedupe sees them. graded rows stay under their own gs: key, because graded entries use it.
  */
-export function prepareCheckIns({ userId, mode, items, marks, sent, now }: PrepareCheckInsInput): {
+export function prepareCheckIns({ userId, mode, items, gradescope = null, marks, sent, now }: PrepareCheckInsInput): {
   assignments: CheckInAssignment[];
   sent: SentCheckIn[];
 } {
+  const gradescopeEvents = mode === "reminders" ? gradescope : null;
+  // Every key with any earlier row, baseline included: a Gradescope assignment seen before.
+  const seenKeys = new Set(sent.filter((row) => row.userId === userId).map((row) => row.sourceId));
   const assignments: CheckInAssignment[] = [];
   const primaryOf = new Map<string, string>();
   for (const item of items) {
@@ -196,6 +276,10 @@ export function prepareCheckIns({ userId, mode, items, marks, sent, now }: Prepa
     if (isSubmitted(item.gradescopeStatus) || isMarkedAway(item, marks, now)) continue;
     const sourceId = mode === "legacy" ? item.canvasSourceId : item.itemKey;
     if (!sourceId) continue;
+    // Canvas decides for anything Canvas has; a Gradescope-only item is new until a row exists.
+    const isNew = item.canvasSourceId
+      ? isNewlyPosted(item, now)
+      : gradescopeEvents !== null && !item.keys.some((key) => seenKeys.has(key));
     assignments.push({
       sourceId,
       userId,
@@ -204,12 +288,28 @@ export function prepareCheckIns({ userId, mode, items, marks, sent, now }: Prepa
       dueAt: item.dueAt,
       status: statusFact(item.gradescopeStatus),
       itemKey: item.itemKey,
+      ...(isNew ? { isNew } : {}),
+    });
+  }
+  const gradedKeys = new Set<string>();
+  for (const gs of gradescopeEvents ?? []) {
+    const key = gradescopeItemKey(gs);
+    if (!hasScore(gs) || gradedKeys.has(key)) continue;
+    gradedKeys.add(key);
+    assignments.push({
+      sourceId: key,
+      userId,
+      courseName: gs.course_name || null,
+      title: gs.title,
+      dueAt: gs.due_at,
+      itemKey: key,
+      score: gs.score.trim(),
     });
   }
   const folded =
     mode === "legacy"
       ? [...sent]
-      : sent.map((row) => ({ ...row, sourceId: primaryOf.get(row.sourceId) ?? row.sourceId }));
+      : sent.map((row) => (row.kind === "graded" ? { ...row } : { ...row, sourceId: primaryOf.get(row.sourceId) ?? row.sourceId }));
   return { assignments, sent: folded };
 }
 

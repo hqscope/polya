@@ -1,6 +1,6 @@
 # Polya on iMessage
 
-An [eve](https://eve.dev) agent that students text for classwork help. It follows the same study rules as Polya on the web: each course's mode (Open, Guided, Practice, Review) decides how much help is allowed, explanations are grounded in the student's own course materials, and it never sends a bare answer. A background loop also texts short check-ins about upcoming assignments that offer to help plan or start, never to do the work.
+An [eve](https://eve.dev) agent that students text for classwork help. It follows the same study rules as Polya on the web: each course's mode (Open, Guided, Practice, Review) decides how much help is allowed, explanations are grounded in the student's own course materials, and it never sends a bare answer. A background loop also texts short check-ins about upcoming, newly posted, and newly graded assignments that offer to help plan, start, or review, never to do the work.
 
 This is its own deployable, separate from the Polya web app and from the scope-ops iMessage agent. It has its own Photon project, its own Vercel project (Root Directory `imessage`), and its own `package.json`.
 

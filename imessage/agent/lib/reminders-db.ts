@@ -4,20 +4,34 @@
 // never from the model.
 //
 // Until the reminders migration is applied, the loop falls back to the polya_imessage_check_ins
-// path (Canvas only) and marks are treated as absent, so production keeps working.
+// path (Canvas only) and marks are treated as absent, so production keeps working. Until the
+// reminder-kinds migration is applied, the Gradescope baseline can't be written, so graded and
+// new-on-Gradescope check-ins stay off (claims of the other new kinds are skipped by the runner).
 import { z } from "zod";
 
 import { CHECK_IN_RULES, type CheckInAssignment, type SentCheckIn } from "./check-ins.ts";
-import { loadLegacySends, loadReminderSends, parseRows } from "./check-ins-db.ts";
+import {
+  chunks,
+  hasGradescopeBaseline,
+  loadLegacySends,
+  loadReminderSends,
+  parseRows,
+  writeGradescopeBaseline,
+} from "./check-ins-db.ts";
 import { serviceDb } from "./db.ts";
 import { GradescopeError } from "./gradescope/client.ts";
 import { listGradescopeAssignments } from "./gradescope/store.ts";
 import type { GsAssignment } from "./gradescope/types.ts";
 import { isMissingTableError } from "./notes.ts";
 import {
+  BASELINE_SENT_AT,
   canvasItemKey,
   coursesMatch,
+  gradescopeBaseline,
+  gradescopeItemKey,
+  hasScore,
   mergeAssignments,
+  NEW_ASSIGNMENT_RULES,
   pickAssignment,
   prepareCheckIns,
   type AssignmentMark,
@@ -41,19 +55,26 @@ export interface StudentAssignments {
   readonly gradescope: GradescopeState;
 }
 
+const SOURCE_COLUMNS = "id, user_id, course_id, title, due_at, created_at";
+
 const sourceRow = z.object({
   id: z.string(),
   user_id: z.string(),
   course_id: z.string(),
   title: z.string(),
   due_at: z.string().nullable(),
+  created_at: z.string().nullable().optional(),
 });
 
 const courseRow = z.object({
   id: z.string(),
   name: z.string().nullable(),
   code: z.string().nullable(),
+  created_at: z.string().nullable().optional(),
 });
+
+type SourceRow = z.infer<typeof sourceRow>;
+type CourseRow = z.infer<typeof courseRow>;
 
 const markRow = z.object({
   item_key: z.string(),
@@ -71,12 +92,7 @@ export async function loadStudentAssignments(
   until: Date,
   options: { readonly courseId?: string } = {},
 ): Promise<StudentAssignments> {
-  const db = serviceDb();
-  let query = db
-    .from("polya_sources")
-    .select("id, user_id, course_id, title, due_at")
-    .eq("user_id", userId)
-    .eq("origin", "canvas_assignment")
+  let query = canvasAssignments(userId)
     .gt("due_at", from.toISOString())
     .lte("due_at", until.toISOString())
     .order("due_at", { ascending: true })
@@ -85,23 +101,8 @@ export async function loadStudentAssignments(
   const [sources, gradescope] = await Promise.all([query, readGradescope(userId)]);
   if (sources.error) throw new Error(`Couldn't load assignments: ${sources.error.message}`);
   const rows = parseRows(sourceRow, sources.data).filter((row) => row.user_id === userId);
-
-  const courseIds = [...new Set([...rows.map((row) => row.course_id), ...(options.courseId ? [options.courseId] : [])])];
-  const courses = new Map<string, z.infer<typeof courseRow>>();
-  if (courseIds.length > 0) {
-    const result = await db.from("polya_courses").select("id, name, code").eq("user_id", userId).in("id", courseIds);
-    if (result.error) throw new Error(`Couldn't load courses: ${result.error.message}`);
-    for (const course of parseRows(courseRow, result.data)) courses.set(course.id, course);
-  }
-
-  const canvas: CanvasAssignmentInput[] = rows.map((row) => ({
-    sourceId: row.id,
-    userId,
-    courseName: courses.get(row.course_id)?.name ?? null,
-    courseCode: courses.get(row.course_id)?.code ?? null,
-    title: row.title,
-    dueAt: row.due_at,
-  }));
+  const courses = await loadCourses(userId, [...rows.map((row) => row.course_id), ...(options.courseId ? [options.courseId] : [])]);
+  const canvas = toCanvasInputs(userId, rows, courses);
 
   let gsRows = gradescope.assignments ?? [];
   if (options.courseId) {
@@ -123,18 +124,43 @@ export async function loadStudentAssignments(
 }
 
 /**
- * The check-in loop's per-student read: assignments due in the next 48 hours, minus submitted,
- * done and snoozed ones, plus the earlier sends needed for dedupe and the daily cap. Uses
- * polya_imessage_reminders when it exists, else the legacy polya_imessage_check_ins path.
+ * The check-in loop's per-student read, minus submitted, done and snoozed assignments, plus the
+ * earlier sends needed for dedupe, the gap between check-ins, and the daily cap:
+ * - Canvas assignments due in the next 48 hours (due_soon, due_today, last_call);
+ * - Canvas assignments Polya stored in the last 24 hours and due later than that (new_assignment);
+ * - every Gradescope assignment it can read (due reminders, new_assignment, graded).
+ * Uses polya_imessage_reminders when it exists, else the legacy polya_imessage_check_ins path. On
+ * the student's first run with Gradescope it records their baseline before selecting anything.
  */
 export async function loadStudentReminderData(
   userId: string,
   now: Date,
 ): Promise<{ assignments: CheckInAssignment[]; sent: SentCheckIn[] }> {
-  const { items } = await loadStudentAssignments(userId, now, new Date(now.getTime() + CHECK_IN_RULES.dueSoonMaxMs));
-  if (items.length === 0) return { assignments: [], sent: [] };
+  const soonUntil = new Date(now.getTime() + CHECK_IN_RULES.dueSoonMaxMs).toISOString();
+  const [dueSoon, recent, gradescope] = await Promise.all([
+    canvasAssignments(userId).gt("due_at", now.toISOString()).lte("due_at", soonUntil).order("due_at", { ascending: true }).limit(MAX_CANVAS_ROWS),
+    canvasAssignments(userId)
+      .gt("created_at", new Date(now.getTime() - NEW_ASSIGNMENT_RULES.recentMs).toISOString())
+      .gt("due_at", soonUntil)
+      .order("due_at", { ascending: true })
+      .limit(MAX_CANVAS_ROWS),
+    readGradescope(userId),
+  ]);
+  if (dueSoon.error) throw new Error(`Couldn't load assignments: ${dueSoon.error.message}`);
+  if (recent.error) throw new Error(`Couldn't load new assignments: ${recent.error.message}`);
+  const rows = new Map<string, SourceRow>();
+  for (const row of [...parseRows(sourceRow, dueSoon.data), ...parseRows(sourceRow, recent.data)]) {
+    if (row.user_id === userId) rows.set(row.id, row);
+  }
+  const courses = await loadCourses(userId, [...rows.values()].map((row) => row.course_id));
+  const canvas = toCanvasInputs(userId, [...rows.values()], courses);
 
-  const keys = [...new Set(items.flatMap((item) => item.keys))];
+  // Gradescope's own window (14 days back, 60 ahead): past-due ones only matter for grades.
+  const gsAll = gradescope.assignments ?? [];
+  const items = mergeAssignments(userId, canvas, gsAll).filter((item) => dueMs(item) > now.getTime());
+  const keys = [...new Set([...items.flatMap((item) => item.keys), ...gsAll.filter(hasScore).map(gradescopeItemKey)])];
+  if (keys.length === 0) return { assignments: [], sent: [] };
+
   const canvasIds = items.flatMap((item) => (item.canvasSourceId ? [item.canvasSourceId] : []));
   const [marks, reminderSends, legacySends] = await Promise.all([
     loadMarks(userId, keys),
@@ -147,20 +173,46 @@ export async function loadStudentReminderData(
   }
   // Sends recorded before the migration still count, under their Canvas item key.
   const sent = [...reminderSends, ...legacySends.map((row) => ({ ...row, sourceId: canvasItemKey(row.sourceId) }))];
-  return prepareCheckIns({ userId, mode: "reminders", items, marks: marks ?? [], sent, now });
+  const baseline = gradescope.state === "connected" && gsAll.length > 0 ? await ensureGradescopeBaseline(userId, gsAll) : null;
+  return prepareCheckIns({
+    userId,
+    mode: "reminders",
+    items,
+    // Graded and new-on-Gradescope check-ins only run once the baseline is recorded.
+    gradescope: baseline === null ? null : gsAll,
+    marks: marks ?? [],
+    sent: [...sent, ...(baseline ?? [])],
+    now,
+  });
+}
+
+/**
+ * Makes sure the student's Gradescope baseline is recorded. Returns the rows written now (as sends
+ * dated BASELINE_SENT_AT, so this run sees them), [] when it already was, or null when it can't be
+ * written yet (the reminder-kinds migration isn't applied).
+ */
+async function ensureGradescopeBaseline(userId: string, gradescope: readonly GsAssignment[]): Promise<SentCheckIn[] | null> {
+  const recorded = await hasGradescopeBaseline(userId);
+  if (recorded === null) return null;
+  if (recorded) return [];
+  const rows = gradescopeBaseline(gradescope);
+  if ((await writeGradescopeBaseline(userId, rows)) === "unavailable") return null;
+  console.log("[polya reminders] recorded Gradescope baseline", { userId, rows: rows.length });
+  return rows.map((row) => ({ userId, sourceId: row.itemKey, kind: row.kind, sentAt: BASELINE_SENT_AT }));
 }
 
 /** The student's marks for these item keys, or null when the marks table doesn't exist yet. */
 export async function loadMarks(userId: string, itemKeys: readonly string[]): Promise<AssignmentMark[] | null> {
-  if (itemKeys.length === 0) return [];
-  const { data, error } = await serviceDb()
-    .from(MARKS_TABLE)
-    .select("item_key, status, until")
-    .eq("user_id", userId)
-    .in("item_key", [...itemKeys]);
-  if (isMissingTableError(error)) return null;
-  if (error) throw new Error(`Couldn't load assignment marks: ${error.message}`);
-  return parseRows(markRow, data).map((row) => ({ itemKey: row.item_key, status: row.status, until: row.until }));
+  const db = serviceDb();
+  const results = await Promise.all(
+    chunks(itemKeys).map((keys) => db.from(MARKS_TABLE).select("item_key, status, until").eq("user_id", userId).in("item_key", keys)),
+  );
+  if (results.some((result) => isMissingTableError(result.error))) return null;
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw new Error(`Couldn't load assignment marks: ${failed.error.message}`);
+  return results
+    .flatMap((result) => parseRows(markRow, result.data))
+    .map((row) => ({ itemKey: row.item_key, status: row.status, until: row.until }));
 }
 
 /**
@@ -213,6 +265,37 @@ async function readGradescope(userId: string): Promise<{ assignments: GsAssignme
 
 function dueMs(item: ReminderItem): number {
   return item.dueAt ? Date.parse(item.dueAt) : Number.NaN;
+}
+
+/** The student's Canvas assignments (polya_sources), for the caller to filter further. */
+function canvasAssignments(userId: string) {
+  return serviceDb().from("polya_sources").select(SOURCE_COLUMNS).eq("user_id", userId).eq("origin", "canvas_assignment");
+}
+
+async function loadCourses(userId: string, courseIds: readonly string[]): Promise<Map<string, CourseRow>> {
+  const courses = new Map<string, CourseRow>();
+  const ids = [...new Set(courseIds)];
+  if (ids.length === 0) return courses;
+  const result = await serviceDb().from("polya_courses").select("id, name, code, created_at").eq("user_id", userId).in("id", ids);
+  if (result.error) throw new Error(`Couldn't load courses: ${result.error.message}`);
+  for (const course of parseRows(courseRow, result.data)) courses.set(course.id, course);
+  return courses;
+}
+
+function toCanvasInputs(userId: string, rows: readonly SourceRow[], courses: ReadonlyMap<string, CourseRow>): CanvasAssignmentInput[] {
+  return rows.map((row) => {
+    const course = courses.get(row.course_id);
+    return {
+      sourceId: row.id,
+      userId,
+      courseName: course?.name ?? null,
+      courseCode: course?.code ?? null,
+      title: row.title,
+      dueAt: row.due_at,
+      createdAt: row.created_at ?? null,
+      courseCreatedAt: course?.created_at ?? null,
+    };
+  });
 }
 
 /** How far back and ahead the mark and snooze tools look for the assignment the student means. */

@@ -4,8 +4,11 @@ import { describe, it } from "node:test";
 import { selectCheckIns, type CheckInLink, type SentCheckIn } from "../agent/lib/check-ins.ts";
 import type { GsAssignment } from "../agent/lib/gradescope/types.ts";
 import {
+  BASELINE_SENT_AT,
   coursesMatch,
+  gradescopeBaseline,
   isItemKey,
+  isNewlyPosted,
   mergeAssignments,
   pickAssignment,
   prepareCheckIns,
@@ -61,6 +64,7 @@ function link(overrides: Partial<CheckInLink> = {}): CheckInLink {
 /** Items -> prepareCheckIns -> selectCheckIns, as the loop runs them. */
 function plan(input: {
   items: ReminderItem[];
+  gradescope?: GsAssignment[] | null;
   marks?: AssignmentMark[];
   sent?: SentCheckIn[];
   mode?: ReminderMode;
@@ -72,6 +76,7 @@ function plan(input: {
     userId: STUDENT,
     mode: input.mode ?? "reminders",
     items: input.items,
+    gradescope: input.gradescope ?? null,
     marks: input.marks ?? [],
     sent: input.sent ?? [],
     now,
@@ -187,6 +192,7 @@ describe("submission-aware reminders", () => {
       [
         "[polya check-in]",
         "",
+        "type: due soon",
         "assignment: HW 7",
         "course: Structure and Interpretation",
         "due: tomorrow at 11:59 PM PDT (Fri, Oct 16)",
@@ -261,6 +267,191 @@ describe("submission-aware reminders", () => {
     assert.equal(plan({ items })?.items.length, 2);
     // Thu 10:30 PM PDT.
     assert.equal(plan({ items, now: new Date("2026-10-16T05:30:00Z") }), undefined);
+  });
+});
+
+describe("graded check-ins", () => {
+  const graded = gs("1006", "Homework 6", "2026-10-10T06:59:00Z", "graded", { score: "8.0 / 10.0" });
+
+  it("texts a Gradescope score once, under the assignment's own Gradescope key", () => {
+    const items = mergeAssignments(STUDENT, [], [graded]);
+    const result = plan({ items, gradescope: [graded] });
+    assert.deepEqual(
+      result?.items.map((item) => [item.sourceId, item.kind]),
+      [["gs:900:1006", "graded"]],
+    );
+    assert.match(
+      result?.message ?? "",
+      /\n\ntype: graded\nassignment: Homework 6\ncourse: CS 61A\nscore: 8\.0 \/ 10\.0\nitem_key: gs:900:1006$/,
+    );
+    const sent: SentCheckIn[] = [{ userId: STUDENT, sourceId: "gs:900:1006", kind: "graded", sentAt: "2026-10-14T18:00:00Z" }];
+    assert.deepEqual(picked({ items, gradescope: [graded], sent }), []);
+  });
+
+  it("needs a score shown, and stays off without Gradescope events or in legacy mode", () => {
+    const noScore = { ...graded, score: null };
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [], [noScore]), gradescope: [noScore] }), []);
+    const items = mergeAssignments(STUDENT, [], [graded]);
+    assert.deepEqual(picked({ items, gradescope: null }), []);
+    assert.deepEqual(picked({ items, gradescope: [graded], mode: "legacy" }), []);
+  });
+
+  it("texts each graded part of a merged assignment once, under its own key", () => {
+    const parts = [
+      gs("71", "Homework 7 Written", "2026-10-13T06:59:00Z", "graded", { score: "9 / 10" }),
+      gs("72", "Homework 7 Coding", "2026-10-13T06:59:00Z", "graded", { score: "4 / 5" }),
+    ];
+    const items = mergeAssignments(STUDENT, [canvas(HW7, "Homework 7", "2026-10-13T06:59:00Z")], parts);
+    assert.deepEqual(picked({ items, gradescope: parts }), [
+      ["gs:900:71", "graded"],
+      ["gs:900:72", "graded"],
+    ]);
+    // A graded row stays under its Gradescope key instead of folding onto the Canvas item.
+    const sent: SentCheckIn[] = [{ userId: STUDENT, sourceId: "gs:900:71", kind: "graded", sentAt: "2026-10-14T18:00:00Z" }];
+    assert.deepEqual(picked({ items, gradescope: parts, sent }), [["gs:900:72", "graded"]]);
+  });
+
+  it("still texts a grade after the student said the assignment is done", () => {
+    const items = mergeAssignments(STUDENT, [], [graded]);
+    const marks: AssignmentMark[] = [{ itemKey: "gs:900:1006", status: "done", until: null }];
+    assert.deepEqual(picked({ items, gradescope: [graded], marks }), [["gs:900:1006", "graded"]]);
+  });
+
+  it("keeps quiet hours", () => {
+    const items = mergeAssignments(STUDENT, [], [graded]);
+    assert.equal(plan({ items, gradescope: [graded], now: new Date("2026-10-16T05:30:00Z") }), undefined, "Thu 10:30 PM PDT");
+  });
+});
+
+describe("new-assignment check-ins", () => {
+  const HW8 = "aaaaaaaa-0000-4000-8000-000000000008";
+  const MON_1159PM_LA = "2026-10-20T06:59:00Z"; // more than 48h after THU_9AM_LA
+  const COURSE_ADDED = "2026-09-01T00:00:00Z";
+  const freshCanvas = (overrides: Partial<CanvasAssignmentInput> = {}) =>
+    canvas(HW8, "Homework 8", MON_1159PM_LA, { createdAt: "2026-10-15T14:00:00Z", courseCreatedAt: COURSE_ADDED, ...overrides });
+
+  it("announces a Canvas assignment Polya picked up in the last day, with no submission status", () => {
+    const result = plan({ items: mergeAssignments(STUDENT, [freshCanvas()], null) });
+    assert.deepEqual(
+      result?.items.map((item) => [item.sourceId, item.kind]),
+      [[`canvas:${HW8}`, "new_assignment"]],
+    );
+    assert.equal(
+      result?.message,
+      [
+        "[polya check-in]",
+        "",
+        "type: new assignment",
+        "assignment: Homework 8",
+        "course: Structure and Interpretation",
+        "due: Mon, Oct 19 at 11:59 PM PDT",
+        `item_key: canvas:${HW8}`,
+      ].join("\n"),
+    );
+  });
+
+  it("doesn't announce what a course import brought in, or anything older than a day", () => {
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [freshCanvas({ courseCreatedAt: "2026-10-15T13:55:00Z" })], null) }), []);
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [freshCanvas({ createdAt: "2026-10-14T15:00:00Z" })], null) }), []);
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [freshCanvas({ createdAt: null })], null) }), []);
+  });
+
+  it("measures 'the last day' and 'course added a day before' inclusively", () => {
+    const now = new Date("2026-10-15T16:00:00Z");
+    const item = { canvasCreatedAt: "2026-10-14T16:00:00Z", courseCreatedAt: "2026-10-13T16:00:00Z" };
+    assert.equal(isNewlyPosted(item, now), true);
+    assert.equal(isNewlyPosted(item, new Date(now.getTime() + 1)), false, "24h plus 1ms old");
+    assert.equal(isNewlyPosted({ ...item, courseCreatedAt: "2026-10-13T16:00:01Z" }, now), false, "course added under 24h before");
+  });
+
+  it("gives a new assignment due within 48 hours the usual due reminder instead", () => {
+    const soon = freshCanvas({ dueAt: FRI_1159PM_LA });
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [soon], null) }), [[`canvas:${HW8}`, "due_soon"]]);
+    const gsSoon = gs("1009", "Homework 9", FRI_1159PM_LA, "not_submitted");
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [], [gsSoon]), gradescope: [gsSoon] }), [["gs:900:1009", "due_soon"]]);
+  });
+
+  it("announces a Gradescope-only assignment with no earlier row, only while Gradescope events are on", () => {
+    const fresh = gs("1008", "Homework 8", MON_1159PM_LA, "not_submitted");
+    const items = mergeAssignments(STUDENT, [], [fresh]);
+    assert.deepEqual(picked({ items, gradescope: [fresh] }), [["gs:900:1008", "new_assignment"]]);
+    assert.deepEqual(picked({ items, gradescope: null }), [], "baseline not recorded");
+    const anyRow: SentCheckIn[] = [{ userId: STUDENT, sourceId: "gs:900:1008", kind: "due_soon", sentAt: "2026-10-01T18:00:00Z" }];
+    assert.deepEqual(picked({ items, gradescope: [fresh], sent: anyRow }), [], "any earlier row means it's been seen");
+  });
+
+  it("lets Canvas decide for an assignment both list", () => {
+    const twin = gs("1008", "HW 8", MON_1159PM_LA, "not_submitted");
+    const oldCanvas = freshCanvas({ createdAt: "2026-10-10T14:00:00Z" });
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [oldCanvas], [twin]), gradescope: [twin] }), [], "posted on Canvas days ago");
+    // Already announced under its Gradescope key before Canvas had it.
+    const announced: SentCheckIn[] = [{ userId: STUDENT, sourceId: "gs:900:1008", kind: "new_assignment", sentAt: "2026-10-15T02:00:00Z" }];
+    assert.deepEqual(picked({ items: mergeAssignments(STUDENT, [freshCanvas()], [twin]), gradescope: [twin], sent: announced }), []);
+  });
+});
+
+describe("first run with Gradescope (no flood)", () => {
+  const MON_1159PM_LA = "2026-10-20T06:59:00Z";
+  const before = [
+    gs("1005", "Homework 5", "2026-10-08T06:59:00Z", "graded", { score: "10 / 10" }),
+    gs("1006", "Homework 6", "2026-10-14T06:59:00Z", "submitted"),
+    gs("1007", "Homework 7", FRI_1159PM_LA, "not_submitted"),
+    gs("1008", "Homework 8", MON_1159PM_LA, "not_submitted"),
+    gs("2001", "Project 1", "2026-11-05T06:59:00Z", "not_submitted"),
+  ];
+  const asSent = (rows: ReturnType<typeof gradescopeBaseline>): SentCheckIn[] =>
+    rows.map((row) => ({ userId: STUDENT, sourceId: row.itemKey, kind: row.kind, sentAt: BASELINE_SENT_AT }));
+
+  it("records every assignment it can see, plus the grades already in", () => {
+    assert.deepEqual(gradescopeBaseline([...before, before[0] as GsAssignment]), [
+      { itemKey: "gs:900:1005", kind: "new_assignment" },
+      { itemKey: "gs:900:1005", kind: "graded" },
+      { itemKey: "gs:900:1006", kind: "new_assignment" },
+      { itemKey: "gs:900:1007", kind: "new_assignment" },
+      { itemKey: "gs:900:1008", kind: "new_assignment" },
+      { itemKey: "gs:900:2001", kind: "new_assignment" },
+    ]);
+  });
+
+  it("announces nothing the student already had, while due reminders still go out", () => {
+    const items = mergeAssignments(STUDENT, [], before);
+    const baseline = asSent(gradescopeBaseline(before));
+    assert.deepEqual(picked({ items, gradescope: before, sent: baseline }), [["gs:900:1007", "due_soon"]]);
+    // Without the baseline the same run would have announced old work.
+    assert.deepEqual(picked({ items, gradescope: before }), [
+      ["gs:900:1007", "due_soon"],
+      ["gs:900:1008", "new_assignment"],
+    ]);
+  });
+
+  it("doesn't count baseline rows toward the daily cap", () => {
+    const items = mergeAssignments(STUDENT, [], before);
+    const threeToday: SentCheckIn[] = ["a", "b", "c"].map((id) => ({
+      userId: STUDENT,
+      sourceId: `gs:1:${id}`,
+      kind: "due_today",
+      sentAt: "2026-10-15T15:30:00Z",
+    }));
+    const sent = [...asSent(gradescopeBaseline(before)), ...threeToday];
+    assert.deepEqual(picked({ items, gradescope: before, sent }), [["gs:900:1007", "due_soon"]]);
+  });
+
+  it("announces assignments and grades that show up after the baseline", () => {
+    const baseline = asSent(gradescopeBaseline(before));
+    const later = [
+      gs("1006", "Homework 6", "2026-10-14T06:59:00Z", "graded", { score: "7.5 / 10" }),
+      ...before.filter((a) => a.assignment_id !== "1006"),
+      gs("1010", "Homework 10", "2026-10-27T06:59:00Z", "not_submitted"),
+    ];
+    const items = mergeAssignments(STUDENT, [], later);
+    const sentEarlier: SentCheckIn[] = [
+      ...baseline,
+      { userId: STUDENT, sourceId: "gs:900:1007", kind: "due_soon", sentAt: "2026-10-15T15:00:00Z" },
+    ];
+    assert.deepEqual(picked({ items, gradescope: later, sent: sentEarlier }), [
+      ["gs:900:1010", "new_assignment"],
+      ["gs:900:1006", "graded"],
+    ]);
   });
 });
 

@@ -2,7 +2,14 @@
 // load -> select -> claim -> send. A check-in is claimed in the database before it's sent and only
 // sent when the claim won, so overlapping runs (cron plus a manual trigger) can't double-text.
 // run-check-ins.ts wires the real database and iMessage hand-off.
+//
+// A kind the database doesn't accept yet (its migration isn't applied) fails its claim with
+// CheckInKindUnavailableError. The run remembers that kind and selects again without it, so the
+// student still gets what the older kinds would have sent (a last_call becomes a due_today).
 import {
+  CHECK_IN_RULES,
+  CheckInKindUnavailableError,
+  compareCheckInItems,
   formatCheckInMessage,
   selectCheckIns,
   type CheckInAssignment,
@@ -19,7 +26,10 @@ export interface CheckInDeps {
     userId: string,
     now: Date,
   ): Promise<{ readonly assignments: readonly CheckInAssignment[]; readonly sent: readonly SentCheckIn[] }>;
-  /** Inserts the dedupe row. Returns its id when this run won, or null when it was already claimed. */
+  /**
+   * Inserts the dedupe row. Returns its id when this run won, or null when it was already claimed.
+   * Throws CheckInKindUnavailableError when the database doesn't accept the kind yet.
+   */
   claim(userId: string, sourceId: string, kind: CheckInKind): Promise<ClaimId | null>;
   /** Removes claims whose message failed to send. */
   release(userId: string, ids: readonly ClaimId[]): Promise<void>;
@@ -41,17 +51,21 @@ export interface CheckInRunCounts {
 }
 
 const STUDENT_CONCURRENCY = 4;
+/** Selection rounds per student: each extra round follows a newly unavailable kind (five kinds). */
+const MAX_SELECTION_ROUNDS = 5;
 
 export async function processCheckIns(deps: CheckInDeps, now: Date): Promise<CheckInRunCounts> {
   const counts: CheckInRunCounts = { students: 0, messagesSent: 0, assignmentsSent: 0, alreadyClaimed: 0, failed: 0 };
   const links = (await deps.loadLinks()).filter((link) => link.checkInsEnabled && link.threadId);
   counts.students = links.length;
+  // Kinds the database rejected during this run; later students skip them without trying.
+  const unavailable = new Set<CheckInKind>();
 
   for (let i = 0; i < links.length; i += STUDENT_CONCURRENCY) {
     await Promise.all(
       links.slice(i, i + STUDENT_CONCURRENCY).map(async (link) => {
         try {
-          const outcome = await checkInStudent(deps, link, now);
+          const outcome = await checkInStudent(deps, link, now, unavailable);
           if (outcome === "already-claimed") counts.alreadyClaimed += 1;
           else if (typeof outcome === "number") {
             counts.messagesSent += 1;
@@ -72,28 +86,48 @@ async function checkInStudent(
   deps: CheckInDeps,
   link: CheckInLink,
   now: Date,
+  unavailable: Set<CheckInKind>,
 ): Promise<number | "nothing" | "already-claimed"> {
   const { assignments, sent } = await deps.loadStudent(link.userId, now);
-  const [plan] = selectCheckIns({ links: [link], assignments, sent, now });
-  if (!plan) return "nothing";
 
   const won: { item: CheckInItem; id: ClaimId }[] = [];
+  // Claims this run already made or lost, as sends, so a later round neither repeats them nor
+  // forgets them in the daily cap.
+  const tried: SentCheckIn[] = [];
+  let lost = 0;
+  let target: { threadId: string; timezone: string } | null = null;
   try {
-    for (const item of plan.items) {
-      const id = await deps.claim(plan.userId, item.sourceId, item.kind);
-      if (id !== null) won.push({ item, id });
-    }
-    if (won.length === 0) return "already-claimed";
+    for (let round = 0; round < MAX_SELECTION_ROUNDS; round += 1) {
+      const room = CHECK_IN_RULES.maxPerRun - won.length;
+      const [plan] = selectCheckIns({ links: [link], assignments, sent: [...sent, ...tried], now, unavailableKinds: unavailable });
+      if (!plan || room <= 0) break;
+      target = { threadId: plan.threadId, timezone: plan.timezone };
 
-    const message =
-      won.length === plan.items.length
-        ? plan.message
-        : formatCheckInMessage(
-            won.map((claim) => claim.item),
-            plan.timezone,
-            now,
-          );
-    await deps.send(plan.threadId, plan.userId, message);
+      let rejected = false;
+      for (const item of plan.items.slice(0, room)) {
+        let id: ClaimId | null;
+        try {
+          id = await deps.claim(plan.userId, item.sourceId, item.kind);
+        } catch (error) {
+          if (!(error instanceof CheckInKindUnavailableError)) throw error;
+          unavailable.add(error.kind);
+          rejected = true;
+          continue;
+        }
+        tried.push({ userId: plan.userId, sourceId: item.sourceId, kind: item.kind, sentAt: now.toISOString() });
+        if (id === null) lost += 1;
+        else won.push({ item, id });
+      }
+      if (!rejected) break;
+    }
+    if (won.length === 0 || !target) return lost > 0 ? "already-claimed" : "nothing";
+
+    const message = formatCheckInMessage(
+      won.map((claim) => claim.item).sort(compareCheckInItems),
+      target.timezone,
+      now,
+    );
+    await deps.send(target.threadId, link.userId, message);
     return won.length;
   } catch (error) {
     // Treat a failed send as not delivered and free the claims so the next run retries. If the
@@ -102,12 +136,12 @@ async function checkInStudent(
     if (won.length > 0) {
       await deps
         .release(
-          plan.userId,
+          link.userId,
           won.map((claim) => claim.id),
         )
         .catch((releaseError: unknown) =>
           deps.logError?.("couldn't release check-in claims", {
-            userId: plan.userId,
+            userId: link.userId,
             error: describe(releaseError),
           }),
         );

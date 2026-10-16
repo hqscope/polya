@@ -3,10 +3,10 @@
 // the loop finds who to look at; it selects only the fields the loop needs (never the handle).
 import { z } from "zod";
 
-import type { CheckInKind, CheckInLink, SentCheckIn } from "./check-ins.ts";
+import { CheckInKindUnavailableError, type CheckInKind, type CheckInLink, type SentCheckIn } from "./check-ins.ts";
 import { serviceDb } from "./db.ts";
 import { isMissingTableError } from "./notes.ts";
-import { isItemKey } from "./reminders.ts";
+import { BASELINE_SENT_AT, isItemKey } from "./reminders.ts";
 
 /**
  * A claimed row's id: polya_imessage_check_ins.id as is, or `reminder:<id>` for a
@@ -23,6 +23,10 @@ const PAGE_SIZE = 1000;
 const SENT_TODAY_LOOKBACK_MS = 26 * 60 * 60 * 1000;
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+/** The kind check constraint rejected the row: that kind's migration isn't applied yet. */
+const CHECK_VIOLATION = "23514";
+/** Keys per `in (...)` filter, so a long list never makes an oversized request URL. */
+const IN_CHUNK_SIZE = 100;
 
 const linkRow = z.object({
   user_id: z.string(),
@@ -86,18 +90,25 @@ export async function loadCheckInLinks(): Promise<CheckInLink[]> {
 export async function loadLegacySends(userId: string, sourceIds: readonly string[], now: Date): Promise<SentCheckIn[]> {
   const db = serviceDb();
   const [forSources, recent] = await Promise.all([
-    sourceIds.length === 0
-      ? Promise.resolve({ data: [], error: null })
-      : db.from(LEGACY_TABLE).select("id, source_id, kind, sent_at").eq("user_id", userId).in("source_id", [...sourceIds]),
+    Promise.all(
+      chunks(sourceIds).map((ids) =>
+        db.from(LEGACY_TABLE).select("id, source_id, kind, sent_at").eq("user_id", userId).in("source_id", ids),
+      ),
+    ),
     db
       .from(LEGACY_TABLE)
       .select("id, source_id, kind, sent_at")
       .eq("user_id", userId)
       .gte("sent_at", new Date(now.getTime() - SENT_TODAY_LOOKBACK_MS).toISOString()),
   ]);
-  if (forSources.error) throw new Error(`Couldn't load sent check-ins: ${forSources.error.message}`);
-  if (recent.error) throw new Error(`Couldn't load sent check-ins: ${recent.error.message}`);
-  return dedupeSends(userId, [...parseRows(sentRow, forSources.data), ...parseRows(sentRow, recent.data)], (row) => row.source_id);
+  const results = [...forSources, recent];
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw new Error(`Couldn't load sent check-ins: ${failed.error.message}`);
+  return dedupeSends(
+    userId,
+    results.flatMap((result) => parseRows(sentRow, result.data)),
+    (row) => row.source_id,
+  );
 }
 
 /**
@@ -107,19 +118,64 @@ export async function loadLegacySends(userId: string, sourceIds: readonly string
 export async function loadReminderSends(userId: string, itemKeys: readonly string[], now: Date): Promise<SentCheckIn[] | null> {
   const db = serviceDb();
   const [forItems, recent] = await Promise.all([
-    itemKeys.length === 0
-      ? Promise.resolve({ data: [], error: null })
-      : db.from(REMINDERS_TABLE).select("id, item_key, kind, sent_at").eq("user_id", userId).in("item_key", [...itemKeys]),
+    Promise.all(
+      chunks(itemKeys).map((keys) =>
+        db.from(REMINDERS_TABLE).select("id, item_key, kind, sent_at").eq("user_id", userId).in("item_key", keys),
+      ),
+    ),
     db
       .from(REMINDERS_TABLE)
       .select("id, item_key, kind, sent_at")
       .eq("user_id", userId)
       .gte("sent_at", new Date(now.getTime() - SENT_TODAY_LOOKBACK_MS).toISOString()),
   ]);
-  if (isMissingTableError(forItems.error) || isMissingTableError(recent.error)) return null;
-  if (forItems.error) throw new Error(`Couldn't load sent reminders: ${forItems.error.message}`);
-  if (recent.error) throw new Error(`Couldn't load sent reminders: ${recent.error.message}`);
-  return dedupeSends(userId, [...parseRows(reminderRow, forItems.data), ...parseRows(reminderRow, recent.data)], (row) => row.item_key);
+  const results = [...forItems, recent];
+  if (results.some((result) => isMissingTableError(result.error))) return null;
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw new Error(`Couldn't load sent reminders: ${failed.error.message}`);
+  return dedupeSends(
+    userId,
+    results.flatMap((result) => parseRows(reminderRow, result.data)),
+    (row) => row.item_key,
+  );
+}
+
+/**
+ * Whether the student's Gradescope baseline is recorded: any new_assignment row under a gs: key.
+ * Null when polya_imessage_reminders doesn't exist yet.
+ */
+export async function hasGradescopeBaseline(userId: string): Promise<boolean | null> {
+  const { data, error } = await serviceDb()
+    .from(REMINDERS_TABLE)
+    .select("id")
+    .eq("user_id", userId)
+    .eq("kind", "new_assignment")
+    .like("item_key", "gs:%")
+    .limit(1);
+  if (isMissingTableError(error)) return null;
+  if (error) throw new Error(`Couldn't check sent reminders: ${error.message}`);
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
+ * Records Gradescope assignments the student already had as seen (reminders.ts gradescopeBaseline),
+ * dated BASELINE_SENT_AT so they never count as sends. Existing rows are left alone, so overlapping
+ * runs are safe. "unavailable" until the database accepts the new kinds (or has the table).
+ */
+export async function writeGradescopeBaseline(
+  userId: string,
+  rows: readonly { readonly itemKey: string; readonly kind: CheckInKind }[],
+): Promise<"written" | "unavailable"> {
+  if (rows.length === 0) return "written";
+  const { error } = await serviceDb()
+    .from(REMINDERS_TABLE)
+    .upsert(
+      rows.map((row) => ({ user_id: userId, item_key: row.itemKey, kind: row.kind, sent_at: BASELINE_SENT_AT })),
+      { onConflict: "user_id,item_key,kind", ignoreDuplicates: true },
+    );
+  if (error?.code === CHECK_VIOLATION || isMissingTableError(error)) return "unavailable";
+  if (error) throw new Error(`Couldn't record the Gradescope baseline: ${error.message}`);
+  return "written";
 }
 
 /**
@@ -127,6 +183,8 @@ export async function loadReminderSends(userId: string, itemKeys: readonly strin
  * constraint, or null when another run already claimed it (or the assignment was deleted
  * meanwhile). Only a winner may send. An item key (`canvas:...`, `gs:...`) is claimed in
  * polya_imessage_reminders; a bare polya_sources id in polya_imessage_check_ins (legacy mode).
+ * Throws CheckInKindUnavailableError when the table's kind check rejects the kind (its migration
+ * isn't applied yet).
  */
 export async function claimCheckIn(userId: string, sourceId: string, kind: CheckInKind): Promise<CheckInClaimId | null> {
   const reminder = isItemKey(sourceId);
@@ -137,6 +195,7 @@ export async function claimCheckIn(userId: string, sourceId: string, kind: Check
     .single();
   if (error) {
     if (error.code === UNIQUE_VIOLATION || error.code === FOREIGN_KEY_VIOLATION) return null;
+    if (error.code === CHECK_VIOLATION) throw new CheckInKindUnavailableError(kind);
     throw new Error(`Couldn't record check-in: ${error.message}`);
   }
   const row = z.object({ id: claimId }).safeParse(data);
@@ -171,6 +230,13 @@ function dedupeSends<T extends { id: number | string; kind: string; sent_at: str
   const byId = new Map<string, T>();
   for (const row of rows) byId.set(String(row.id), row);
   return [...byId.values()].map((row) => ({ userId, sourceId: key(row), kind: row.kind, sentAt: row.sent_at }));
+}
+
+/** Splits a list for `in (...)` filters; an empty list gives no chunks (and so no query). */
+export function chunks<T>(values: readonly T[], size = IN_CHUNK_SIZE): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size));
+  return out;
 }
 
 export function parseRows<T>(schema: z.ZodType<T>, data: unknown): T[] {
