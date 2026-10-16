@@ -27,6 +27,10 @@ export interface CheckInAssignment {
   readonly title: string;
   /** ISO timestamp, or null when Canvas has no due date. */
   readonly dueAt: string | null;
+  /** Submission fact for the hand-off, e.g. "not submitted on Gradescope" (reminders.ts). */
+  readonly status?: string;
+  /** `canvas:<source id>` or `gs:<course>:<assignment>`, for mark_assignment_done. */
+  readonly itemKey?: string;
 }
 
 /** A polya_imessage_check_ins row. `kind` may be one this loop doesn't send (new_assignment). */
@@ -43,6 +47,8 @@ export interface CheckInItem {
   readonly courseName: string | null;
   readonly title: string;
   readonly dueAt: Date;
+  readonly status?: string;
+  readonly itemKey?: string;
 }
 
 /** One message to one student: up to two assignments, earliest due first. */
@@ -119,6 +125,8 @@ export function selectCheckIns({ links, assignments, sent, now }: SelectCheckIns
         courseName: assignment.courseName,
         title: assignment.title,
         dueAt,
+        ...(assignment.status ? { status: assignment.status } : {}),
+        ...(assignment.itemKey ? { itemKey: assignment.itemKey } : {}),
       });
     }
     candidates.sort(
@@ -177,6 +185,8 @@ export function formatCheckInMessage(items: readonly CheckInItem[], timezone: st
     const course = item.courseName ? cleanText(item.courseName) : "";
     if (course) lines.push(`course: ${course}`);
     lines.push(`due: ${describeDue(item.dueAt, now, zone)}`);
+    if (item.status) lines.push(`status: ${cleanText(item.status)}`);
+    if (item.itemKey) lines.push(`item_key: ${cleanText(item.itemKey)}`);
     return lines.join("\n");
   });
   return [CHECK_IN_PREFIX, ...blocks].join("\n\n");

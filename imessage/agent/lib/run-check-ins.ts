@@ -5,8 +5,9 @@ import type { SessionAuthContext } from "eve/context";
 import type { ScheduleToFn } from "eve/schedules";
 
 import photon from "../channels/photon.ts";
-import { claimCheckIn, loadCheckInLinks, loadStudentCheckInData, releaseCheckIns } from "./check-ins-db.ts";
+import { claimCheckIn, loadCheckInLinks, releaseCheckIns } from "./check-ins-db.ts";
 import { processCheckIns, type CheckInRunCounts } from "./check-ins-runner.ts";
+import { loadStudentReminderData } from "./reminders-db.ts";
 import { STUDENT_ATTRIBUTE } from "./student.ts";
 
 export type { CheckInRunCounts } from "./check-ins-runner.ts";
@@ -29,7 +30,8 @@ export function runCheckIns(to: ScheduleToFn, now: Date): Promise<CheckInRunCoun
   return processCheckIns(
     {
       loadLinks: loadCheckInLinks,
-      loadStudent: loadStudentCheckInData,
+      // Canvas + Gradescope, minus submitted, done and snoozed assignments (reminders-db.ts).
+      loadStudent: loadStudentReminderData,
       claim: claimCheckIn,
       release: releaseCheckIns,
       async send(threadId, userId, message) {

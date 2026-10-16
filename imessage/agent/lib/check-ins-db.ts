@@ -3,19 +3,21 @@
 // the loop finds who to look at; it selects only the fields the loop needs (never the handle).
 import { z } from "zod";
 
-import { CHECK_IN_RULES, type CheckInAssignment, type CheckInKind, type CheckInLink, type SentCheckIn } from "./check-ins.ts";
+import type { CheckInKind, CheckInLink, SentCheckIn } from "./check-ins.ts";
 import { serviceDb } from "./db.ts";
+import { isMissingTableError } from "./notes.ts";
+import { isItemKey } from "./reminders.ts";
 
-/** polya_imessage_check_ins.id (bigint identity). */
+/**
+ * A claimed row's id: polya_imessage_check_ins.id as is, or `reminder:<id>` for a
+ * polya_imessage_reminders row, so release knows which table to delete from.
+ */
 export type CheckInClaimId = number | string;
 
-export interface StudentCheckInData {
-  readonly assignments: readonly CheckInAssignment[];
-  readonly sent: readonly SentCheckIn[];
-}
-
+const LEGACY_TABLE = "polya_imessage_check_ins";
+const REMINDERS_TABLE = "polya_imessage_reminders";
+const REMINDER_CLAIM_PREFIX = "reminder:";
 const PAGE_SIZE = 1000;
-const MAX_ASSIGNMENTS_PER_STUDENT = 50;
 // A local calendar day lasts at most 25 hours (DST fall-back), so 26 hours of history always
 // covers "check-ins sent today" in any time zone.
 const SENT_TODAY_LOOKBACK_MS = 26 * 60 * 60 * 1000;
@@ -31,25 +33,18 @@ const linkRow = z.object({
   quiet_end: z.number(),
 });
 
-const sourceRow = z.object({
-  id: z.string(),
-  user_id: z.string(),
-  course_id: z.string(),
-  title: z.string(),
-  due_at: z.string().nullable(),
-});
-
-const courseRow = z.object({
-  id: z.string(),
-  name: z.string().nullable(),
-  code: z.string().nullable(),
-});
-
 const claimId = z.union([z.number(), z.string()]);
 
 const sentRow = z.object({
   id: claimId,
   source_id: z.string(),
+  kind: z.string(),
+  sent_at: z.string(),
+});
+
+const reminderRow = z.object({
+  id: claimId,
+  item_key: z.string(),
   kind: z.string(),
   sent_at: z.string(),
 });
@@ -85,80 +80,59 @@ export async function loadCheckInLinks(): Promise<CheckInLink[]> {
 }
 
 /**
- * One student's Canvas assignments due in the next 48 hours, plus the check-in rows needed to
- * dedupe them (every earlier send for those assignments) and to apply the daily cap (every send
- * in the last 26 hours). Returns nothing to send when there are no upcoming assignments.
+ * Earlier sends from polya_imessage_check_ins (keyed by polya_sources id): every send for these
+ * assignments (dedupe) plus every send in the last 26 hours (the daily cap).
  */
-export async function loadStudentCheckInData(userId: string, now: Date): Promise<StudentCheckInData> {
+export async function loadLegacySends(userId: string, sourceIds: readonly string[], now: Date): Promise<SentCheckIn[]> {
   const db = serviceDb();
-  const sources = await db
-    .from("polya_sources")
-    .select("id, user_id, course_id, title, due_at")
-    .eq("user_id", userId)
-    .eq("origin", "canvas_assignment")
-    .gt("due_at", now.toISOString())
-    .lte("due_at", new Date(now.getTime() + CHECK_IN_RULES.dueSoonMaxMs).toISOString())
-    .order("due_at", { ascending: true })
-    .limit(MAX_ASSIGNMENTS_PER_STUDENT);
-  if (sources.error) throw new Error(`Couldn't load assignments: ${sources.error.message}`);
-
-  const rows = parseRows(sourceRow, sources.data).filter((row) => row.user_id === userId);
-  if (rows.length === 0) return { assignments: [], sent: [] };
-
-  const sourceIds = rows.map((row) => row.id);
-  const courseIds = [...new Set(rows.map((row) => row.course_id))];
-  const [courses, sentForSources, sentRecently] = await Promise.all([
-    db.from("polya_courses").select("id, name, code").eq("user_id", userId).in("id", courseIds),
+  const [forSources, recent] = await Promise.all([
+    sourceIds.length === 0
+      ? Promise.resolve({ data: [], error: null })
+      : db.from(LEGACY_TABLE).select("id, source_id, kind, sent_at").eq("user_id", userId).in("source_id", [...sourceIds]),
     db
-      .from("polya_imessage_check_ins")
-      .select("id, source_id, kind, sent_at")
-      .eq("user_id", userId)
-      .in("source_id", sourceIds),
-    db
-      .from("polya_imessage_check_ins")
+      .from(LEGACY_TABLE)
       .select("id, source_id, kind, sent_at")
       .eq("user_id", userId)
       .gte("sent_at", new Date(now.getTime() - SENT_TODAY_LOOKBACK_MS).toISOString()),
   ]);
-  if (courses.error) throw new Error(`Couldn't load courses: ${courses.error.message}`);
-  if (sentForSources.error) throw new Error(`Couldn't load sent check-ins: ${sentForSources.error.message}`);
-  if (sentRecently.error) throw new Error(`Couldn't load sent check-ins: ${sentRecently.error.message}`);
-
-  const courseNames = new Map(
-    parseRows(courseRow, courses.data).map((course) => [course.id, course.name || course.code || null]),
-  );
-  // The two check-in reads overlap; key by row id so the daily count sees each send once.
-  const sentById = new Map<string, z.infer<typeof sentRow>>();
-  for (const row of [...parseRows(sentRow, sentForSources.data), ...parseRows(sentRow, sentRecently.data)]) {
-    sentById.set(String(row.id), row);
-  }
-
-  return {
-    assignments: rows.map((row) => ({
-      sourceId: row.id,
-      userId,
-      courseName: courseNames.get(row.course_id) ?? null,
-      title: row.title,
-      dueAt: row.due_at,
-    })),
-    sent: [...sentById.values()].map((row) => ({
-      userId,
-      sourceId: row.source_id,
-      kind: row.kind,
-      sentAt: row.sent_at,
-    })),
-  };
+  if (forSources.error) throw new Error(`Couldn't load sent check-ins: ${forSources.error.message}`);
+  if (recent.error) throw new Error(`Couldn't load sent check-ins: ${recent.error.message}`);
+  return dedupeSends(userId, [...parseRows(sentRow, forSources.data), ...parseRows(sentRow, recent.data)], (row) => row.source_id);
 }
 
 /**
- * Records a check-in before it's sent. Returns the new row id when this run won the
- * (user_id, source_id, kind) unique constraint, or null when another run already claimed it
- * (or the assignment was deleted meanwhile). Only a winner may send.
+ * Earlier sends from polya_imessage_reminders (keyed by item key), read the same way as
+ * loadLegacySends. Returns null when the table doesn't exist yet (migration not applied).
+ */
+export async function loadReminderSends(userId: string, itemKeys: readonly string[], now: Date): Promise<SentCheckIn[] | null> {
+  const db = serviceDb();
+  const [forItems, recent] = await Promise.all([
+    itemKeys.length === 0
+      ? Promise.resolve({ data: [], error: null })
+      : db.from(REMINDERS_TABLE).select("id, item_key, kind, sent_at").eq("user_id", userId).in("item_key", [...itemKeys]),
+    db
+      .from(REMINDERS_TABLE)
+      .select("id, item_key, kind, sent_at")
+      .eq("user_id", userId)
+      .gte("sent_at", new Date(now.getTime() - SENT_TODAY_LOOKBACK_MS).toISOString()),
+  ]);
+  if (isMissingTableError(forItems.error) || isMissingTableError(recent.error)) return null;
+  if (forItems.error) throw new Error(`Couldn't load sent reminders: ${forItems.error.message}`);
+  if (recent.error) throw new Error(`Couldn't load sent reminders: ${recent.error.message}`);
+  return dedupeSends(userId, [...parseRows(reminderRow, forItems.data), ...parseRows(reminderRow, recent.data)], (row) => row.item_key);
+}
+
+/**
+ * Records a check-in before it's sent. Returns a claim id when this run won the unique
+ * constraint, or null when another run already claimed it (or the assignment was deleted
+ * meanwhile). Only a winner may send. An item key (`canvas:...`, `gs:...`) is claimed in
+ * polya_imessage_reminders; a bare polya_sources id in polya_imessage_check_ins (legacy mode).
  */
 export async function claimCheckIn(userId: string, sourceId: string, kind: CheckInKind): Promise<CheckInClaimId | null> {
+  const reminder = isItemKey(sourceId);
   const { data, error } = await serviceDb()
-    .from("polya_imessage_check_ins")
-    .insert({ user_id: userId, source_id: sourceId, kind })
+    .from(reminder ? REMINDERS_TABLE : LEGACY_TABLE)
+    .insert(reminder ? { user_id: userId, item_key: sourceId, kind } : { user_id: userId, source_id: sourceId, kind })
     .select("id")
     .single();
   if (error) {
@@ -167,21 +141,39 @@ export async function claimCheckIn(userId: string, sourceId: string, kind: Check
   }
   const row = z.object({ id: claimId }).safeParse(data);
   if (!row.success) throw new Error("Couldn't record check-in: the insert returned no id");
-  return row.data.id;
+  return reminder ? `${REMINDER_CLAIM_PREFIX}${row.data.id}` : row.data.id;
 }
 
 /** Deletes claims whose message failed to send, so a later run can try again. */
 export async function releaseCheckIns(userId: string, ids: readonly CheckInClaimId[]): Promise<void> {
-  if (ids.length === 0) return;
-  const { error } = await serviceDb()
-    .from("polya_imessage_check_ins")
-    .delete()
-    .eq("user_id", userId)
-    .in("id", ids.map(String));
-  if (error) throw new Error(`Couldn't release check-in claims: ${error.message}`);
+  const reminderIds = ids.filter(isReminderClaim).map((id) => String(id).slice(REMINDER_CLAIM_PREFIX.length));
+  const legacyIds = ids.filter((id) => !isReminderClaim(id)).map(String);
+  for (const [table, tableIds] of [
+    [REMINDERS_TABLE, reminderIds],
+    [LEGACY_TABLE, legacyIds],
+  ] as const) {
+    if (tableIds.length === 0) continue;
+    const { error } = await serviceDb().from(table).delete().eq("user_id", userId).in("id", tableIds);
+    if (error) throw new Error(`Couldn't release check-in claims: ${error.message}`);
+  }
 }
 
-function parseRows<T>(schema: z.ZodType<T>, data: unknown): T[] {
+function isReminderClaim(id: CheckInClaimId): boolean {
+  return typeof id === "string" && id.startsWith(REMINDER_CLAIM_PREFIX);
+}
+
+/** The two send reads overlap; key by row id so the daily count sees each send once. */
+function dedupeSends<T extends { id: number | string; kind: string; sent_at: string }>(
+  userId: string,
+  rows: readonly T[],
+  key: (row: T) => string,
+): SentCheckIn[] {
+  const byId = new Map<string, T>();
+  for (const row of rows) byId.set(String(row.id), row);
+  return [...byId.values()].map((row) => ({ userId, sourceId: key(row), kind: row.kind, sentAt: row.sent_at }));
+}
+
+export function parseRows<T>(schema: z.ZodType<T>, data: unknown): T[] {
   if (!Array.isArray(data)) return [];
   const rows: T[] = [];
   for (const raw of data) {
