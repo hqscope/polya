@@ -19,6 +19,13 @@ import {
   type KalturaMediaEntry,
 } from "../_shared/kaltura.ts";
 import { classifyContentRole } from "../_shared/content-roles.ts";
+import {
+  cleanUploadTitle,
+  isValidUploadPath,
+  MAX_UPLOAD_BYTES,
+  UPLOAD_TOO_LARGE_MESSAGE,
+  uploadSpecFor,
+} from "../_shared/upload-checks.ts";
 import { LARGE_PDF_BYTES } from "../_shared/ocr-pages.ts";
 import { diffSources, type EnumeratedSource, type ExistingSourceRow } from "../_shared/enumerate.ts";
 import {
@@ -170,7 +177,8 @@ interface UploadBody {
   course_id: string;
   storage_path: string;
   title: string;
-  kind: "transcript_txt" | "transcript_json" | "transcript_vtt" | "transcript_srt";
+  // "pdf" or a transcript kind; checked against upload-checks.ts.
+  kind: string;
 }
 interface ProcessBody {
   action: "process";
@@ -1026,22 +1034,47 @@ async function handleStatus(userId: string, courseId: string): Promise<Response>
 }
 
 async function handleAddUpload(userId: string, body: UploadBody): Promise<Response> {
-  // The client uploaded the transcript to storage under its own uid prefix;
-  // register it as a queued source for the process pump to pick up. Both ids
-  // come from the client, so prove ownership before the service-role insert.
+  // The client uploaded the file to storage under its own uid prefix; register
+  // it as a queued source for the process pump to pick up. The ids, kind, path
+  // and title all come from the client, so check each before the service-role
+  // insert.
+  const spec = uploadSpecFor(body.kind);
+  if (!spec) {
+    return json({ error: "That kind of file can't be added.", code: "bad_request" }, 400);
+  }
   await assertCourseOwned(userId, body.course_id);
   assertUserStoragePath(userId, body.storage_path);
+  if (!isValidUploadPath(userId, body.storage_path, spec)) {
+    return json({ error: "That file isn't available.", code: "bad_request" }, 400);
+  }
+  const title = cleanUploadTitle(body.title);
+  if (!title) {
+    return json({ error: "That file needs a name.", code: "bad_request" }, 400);
+  }
+  // The stored size, not the client's claim: the pump runs large PDFs one at a
+  // time, and only when it knows the size before the first full read.
+  const sizeBytes = await storedObjectSize(body.storage_path);
+  if (sizeBytes === null) {
+    return json({ error: "We couldn't find that upload. Try adding it again.", code: "bad_request" }, 400);
+  }
+  if (sizeBytes > MAX_UPLOAD_BYTES) {
+    return json({ error: UPLOAD_TOO_LARGE_MESSAGE, code: "too_large" }, 413);
+  }
+
+  const isFile = spec.origin === "upload_file";
   const { data, error } = await service
     .from("polya_sources")
     .insert({
       user_id: userId,
       course_id: body.course_id,
-      origin: "upload_transcript",
-      source_kind: body.kind,
+      origin: spec.origin,
+      source_kind: spec.sourceKind,
       canvas_id: null,
-      title: body.title,
+      title,
       storage_path: body.storage_path,
-      content_role: "material",
+      size_bytes: sizeBytes,
+      // An uploaded "hw3_sols.pdf" is still an answer key, hidden in Practice mode.
+      content_role: isFile ? classifyContentRole({ title }) : "material",
       status: "queued",
     })
     .select("id")
@@ -1049,10 +1082,25 @@ async function handleAddUpload(userId: string, body: UploadBody): Promise<Respon
 
   if (error || !data) {
     console.error("[polya-import] add_upload failed:", error?.message);
-    return json({ error: "Couldn't add that transcript.", code: "internal" }, 500);
+    const message = isFile ? "Couldn't add that file." : "Couldn't add that transcript.";
+    return json({ error: message, code: "internal" }, 500);
   }
-  await kickPump(userId); // process the uploaded transcript in the background
+  await kickPump(userId); // process the upload in the background
   return json({ source_id: data.id });
+}
+
+async function storedObjectSize(storagePath: string): Promise<number | null> {
+  const slash = storagePath.lastIndexOf("/");
+  const name = storagePath.slice(slash + 1);
+  const { data, error } = await service.storage
+    .from(STORAGE_BUCKET)
+    .list(storagePath.slice(0, slash), { search: name, limit: 2 });
+  if (error) {
+    console.error("[polya-import] add_upload size lookup failed:", error.message);
+    return null;
+  }
+  const size = (data ?? []).find((object) => object.name === name)?.metadata?.size;
+  return typeof size === "number" ? size : null;
 }
 
 // One bounded pump step: advance a single source, then report progress.

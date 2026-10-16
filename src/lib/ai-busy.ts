@@ -54,3 +54,8 @@ export const AI_BUSY_POLYA_IMPORT_QUEUE =
 // `ai.busy.polya.import.resumed`: optional toast when a paused import starts
 // moving again. Polya has no toast system today, so nothing shows this yet.
 export const AI_BUSY_POLYA_IMPORT_RESUMED = "Import resumed.";
+
+// `ai.busy.polya.study`: in the practice area when new questions can't be
+// written today. Questions already written stay available.
+export const AI_BUSY_POLYA_STUDY =
+  "Polya can't write new questions right now. Things are busier than usual, so try again in a little while. Questions you've already started are still here.";

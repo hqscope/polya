@@ -42,6 +42,12 @@ import { embedAndInsertTranscript, embedAndInsertProcedures } from "./ingest-ext
 import type { DriveReader } from "./drive-grant.ts";
 import { newDriveReader } from "./drive-grant-store.ts";
 import { fetchSitePageText, fetchWebPdf, WEB_ORIGINS } from "./web-sources.ts";
+import {
+  looksLikePdf,
+  MAX_UPLOAD_PAGES,
+  UPLOAD_NOT_PDF_MESSAGE,
+  UPLOAD_TOO_MANY_PAGES_MESSAGE,
+} from "./upload-checks.ts";
 
 // Small page window so a step that has to OCR every page still fits the edge
 // CPU/wall budget (OCR is ~seconds/page); text-only PDFs just take a few more
@@ -409,6 +415,13 @@ async function advancePdf(
     }
     // Fixture / uploaded / extension-registered PDF: bytes already in storage.
     const bytes = await downloadFromStorage(source.storage_path);
+    const studentFile = source.origin === "upload_file";
+    // A student's own upload is only as trustworthy as its name: refuse
+    // anything that isn't a PDF before the parser sees it.
+    if (studentFile && !looksLikePdf(new Uint8Array(bytes))) {
+      await failSource(source.id, UPLOAD_NOT_PDF_MESSAGE);
+      return "failed";
+    }
     const sha = await sha256Hex(bytes);
     if (refreshing && unchangedOutput(source, sha)) {
       await service
@@ -419,10 +432,15 @@ async function advancePdf(
     }
     if (refreshing) await clearSourceOutput(source.id);
     const info = await getPdfInfo(bytes);
+    if (studentFile && info.totalPages > MAX_UPLOAD_PAGES) {
+      await failSource(source.id, UPLOAD_TOO_MANY_PAGES_MESSAGE);
+      return "failed";
+    }
     await service
       .from("polya_sources")
       .update({
         content_sha256: sha,
+        size_bytes: bytes.byteLength,
         page_count: info.totalPages,
         status: "parsing",
         pages_parsed: 0,

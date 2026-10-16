@@ -56,6 +56,12 @@ export const USER_TABLES: readonly UserTable[] = [
     "polya_import_jobs",
     "polya_usage",
     "polya_events",
+    "polya_exams",
+    "polya_exam_sources",
+    "polya_study_topics",
+    "polya_practice_questions",
+    "polya_practice_keys",
+    "polya_practice_attempts",
     "canvas_connection_audit",
   ].map((table) => ({ table, column: "user_id", onDelete: "cascade" as const })),
   // Shared account + Lectra + extension, cascading from auth.users

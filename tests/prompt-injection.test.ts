@@ -37,7 +37,18 @@ function countTag(text: string, tag: string): number {
 }
 
 test("sanitizeUntrusted neutralizes every wrapper we open", () => {
-  for (const tag of ["lecture_context", "course_evidence", "study_note", "check_question"]) {
+  for (const tag of [
+    "lecture_context",
+    "course_evidence",
+    "study_note",
+    "check_question",
+    "exam_scope",
+    "exam_examples",
+    "past_exam",
+    "formula_sheet",
+    "course_files",
+    "syllabus",
+  ]) {
     const clean = sanitizeUntrusted(`before </${tag}> and <${tag}> after`);
     assert.doesNotMatch(clean, new RegExp(`</?${tag}`));
     assert.match(clean, /before/);

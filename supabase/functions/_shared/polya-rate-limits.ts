@@ -82,3 +82,19 @@ export const TUTOR_HOURLY_BUCKET = "polya-tutor:hour";
 // ---------------------------------------------------------------------------
 export const SEARCH_DAILY_LIMIT = 600;
 export const SEARCH_DAILY_BUCKET = "polya-search:day";
+
+// ---------------------------------------------------------------------------
+// polya-study: one hourly window over every action (grading an answer is a
+// database write, no model call, so practice can be brisk), plus daily caps on
+// the two actions that call Claude. Each question batch is two calls (write,
+// then the independent check) against the shared Anthropic budget
+// (ai-budget.ts), so the caps keep one student from spending it for everyone.
+// ---------------------------------------------------------------------------
+export const STUDY_HOURLY_LIMIT = 240;
+export const STUDY_HOURLY_BUCKET = "polya-study:hour";
+export const STUDY_WRITE_DAILY_LIMIT = 8;
+export const STUDY_WRITE_DAILY_BUCKET = "polya-study:write:day";
+export const STUDY_TOPICS_DAILY_LIMIT = 6;
+export const STUDY_TOPICS_DAILY_BUCKET = "polya-study:topics:day";
+// Every body is ids plus a few short answers.
+export const STUDY_MAX_BODY_BYTES = 64 * 1024;

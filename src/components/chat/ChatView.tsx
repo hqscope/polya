@@ -10,6 +10,7 @@ import MessageBubble, { type ChatMessage } from "@/components/chat/MessageBubble
 import SourceRail from "@/components/chat/SourceRail";
 import SourcePanel from "@/components/viewer/SourcePanel";
 import SourceSheet from "@/components/viewer/SourceSheet";
+import CourseHeader from "@/components/course/CourseHeader";
 import { useMediaQuery, WIDE_LAYOUT_QUERY } from "@/lib/use-media-query";
 import type { RecentConversation } from "@/lib/conversations";
 import {
@@ -27,14 +28,9 @@ interface Props {
   initialMessages?: ChatMessage[];
   /** Shown on a fresh visit so a returning student can pick one back up. */
   recentConversations?: RecentConversation[];
+  /** Prefilled in the question box (e.g. a practice question to talk through); never sent for the student. */
+  initialInput?: string;
 }
-
-const POLICY_CHIP: Record<string, [string, string]> = {
-  open: ["Open", "full answers on request"],
-  guided: ["Guided", "hints first"],
-  practice: ["Practice", "commit before reveal"],
-  review: ["Review", "full solutions"],
-};
 
 type MasteryTurn = { phase: "start"; concept: string } | { phase: "answer"; check_id: string };
 
@@ -58,6 +54,7 @@ export default function ChatView({
   initialConversationId,
   initialMessages = [],
   recentConversations = [],
+  initialInput = "",
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [streaming, setStreaming] = useState("");
@@ -75,7 +72,7 @@ export default function ChatView({
   const [railIndex, setRailIndex] = useState<number | null>(null);
   const [viewing, setViewing] = useState<TutorSource | null>(null);
   const [busy, setBusy] = useState(false);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput);
   // Lecture Mode: what the student can see in the room right now.
   const [lectureOpen, setLectureOpen] = useState(false);
   const [boardText, setBoardText] = useState("");
@@ -322,51 +319,29 @@ export default function ChatView({
   const assistantTurns = messages.filter((m) => m.role === "assistant").length;
   const answeringCheck = masteryCheckId !== null;
 
-  const [policyLabel, policyDesc] =
-    POLICY_CHIP[policyMode] ?? POLICY_CHIP.guided;
-  const materialsHref = `/app/courses/${courseId}/materials`;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-[46px] shrink-0 items-center gap-2.5 border-b border-line px-3 sm:px-[18px]">
-        <Link href="/app" className="hidden shrink-0 text-[13px] text-ink3 hover:text-ink sm:inline">
-          My courses
-        </Link>
-        <span className="hidden text-[13px] text-ink3 sm:inline">/</span>
-        <h1 className="m-0 truncate text-[13.5px] font-semibold tracking-[-0.01em]">
-          {courseName}
-        </h1>
-        <Link
-          href={materialsHref}
-          title="Set for this course — see the materials page"
-          className="shrink-0 rounded bg-accent-soft px-2 py-[3px] text-[10px] font-[650] uppercase tracking-[0.07em] text-accent-ink hover:text-accent-ink"
-        >
-          {policyLabel}
-          <span className="hidden sm:inline"> · {policyDesc}</span>
-        </Link>
-        {messages.length > 0 ? (
-          <button
-            type="button"
-            onClick={startNewConversation}
-            disabled={busy}
-            className="button-secondary ml-auto h-7 shrink-0 cursor-pointer rounded-md px-[11px] text-[12.5px] disabled:cursor-default disabled:opacity-50"
-          >
-            <span className="sm:hidden">
-              New<span className="sr-only"> conversation</span>
-            </span>
-            <span className="hidden sm:inline">New conversation</span>
-          </button>
-        ) : null}
-        <Link
-          href={materialsHref}
-          className={`button-secondary h-7 shrink-0 rounded-md px-[11px] text-[12.5px] ${
-            messages.length > 0 ? "" : "ml-auto"
-          }`}
-        >
-          <span className="sm:hidden">Materials</span>
-          <span className="hidden sm:inline">Course materials</span>
-        </Link>
-      </header>
+      <CourseHeader
+        courseId={courseId}
+        courseName={courseName}
+        policyMode={policyMode}
+        actions={
+          messages.length > 0 ? (
+            <button
+              type="button"
+              onClick={startNewConversation}
+              disabled={busy}
+              className="button-secondary h-7 shrink-0 cursor-pointer rounded-md px-[11px] text-[12.5px] disabled:cursor-default disabled:opacity-50"
+            >
+              <span className="sm:hidden">
+                New<span className="sr-only"> conversation</span>
+              </span>
+              <span className="hidden sm:inline">New conversation</span>
+            </button>
+          ) : null
+        }
+      />
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { segmentCitations } from "@/lib/citations";
 import type { TutorSource } from "@/lib/sse";
 import CitationPill from "@/components/chat/CitationPill";
+import MathText from "@/components/MathText";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -51,7 +52,9 @@ function renderInline(text: string): ReactNode[] {
   return nodes;
 }
 
-// Render assistant prose with inline [n] pills; preserve paragraph breaks.
+// Render assistant prose with typeset math, inline [n] pills, and paragraph
+// breaks. Math is split out first so the emphasis rules never touch it (the
+// _italic_ rule would otherwise eat LaTeX subscripts).
 function renderAssistant(
   content: string,
   onCiteClick?: (n: number) => void,
@@ -59,15 +62,17 @@ function renderAssistant(
   caret?: boolean,
 ) {
   const paragraphs = content.split(/\n{2,}/);
+  const renderText = (text: string) =>
+    segmentCitations(text).map((seg, i) =>
+      seg.kind === "text" ? (
+        <span key={i}>{renderInline(seg.text)}</span>
+      ) : (
+        <CitationPill key={i} n={seg.n} active={active === seg.n} onClick={onCiteClick} />
+      ),
+    );
   return paragraphs.map((paragraph, pIdx) => (
     <p key={pIdx} className="m-0 text-pretty">
-      {segmentCitations(paragraph).map((seg, i) =>
-        seg.kind === "text" ? (
-          <span key={i}>{renderInline(seg.text)}</span>
-        ) : (
-          <CitationPill key={i} n={seg.n} active={active === seg.n} onClick={onCiteClick} />
-        ),
-      )}
+      <MathText text={paragraph} renderText={renderText} />
       {caret && pIdx === paragraphs.length - 1 ? (
         <span className="ml-0.5 inline-block h-3.5 w-[7px] animate-caret-blink rounded-[2px] bg-accent align-middle" />
       ) : null}
@@ -86,7 +91,7 @@ export default function MessageBubble({
     return (
       <div className="flex justify-end">
         <div className="max-w-[78%] rounded-[10px] bg-line-soft px-[13px] py-[9px] text-[13.5px] leading-relaxed whitespace-pre-wrap wrap-anywhere">
-          {message.content}
+          <MathText text={message.content} />
         </div>
       </div>
     );

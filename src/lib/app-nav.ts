@@ -28,3 +28,15 @@ export function currentPlaceLabel(pathname: string, courses: NavCourse[]): strin
   if (course) return course.code?.trim() || course.name;
   return "My courses";
 }
+
+export type CourseTab = "chat" | "study" | "materials";
+
+/** Which course tab `pathname` belongs to, or null outside this course. */
+export function courseTab(pathname: string, courseId: string): CourseTab | null {
+  const base = `/app/courses/${courseId}`;
+  if (pathname === base) return "chat";
+  for (const tab of ["study", "materials"] as const) {
+    if (pathname === `${base}/${tab}` || pathname.startsWith(`${base}/${tab}/`)) return tab;
+  }
+  return null;
+}

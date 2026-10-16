@@ -14,6 +14,9 @@ test("isAnswerKeyLike flags solution/answer-key material", () => {
   assert.ok(isAnswerKeyLike({ title: "su26_final_sols" }));
   assert.ok(isAnswerKeyLike({ title: "hw3 sols" }));
   assert.ok(isAnswerKeyLike({ title: "fa25_mt2_sol" }));
+  assert.ok(isAnswerKeyLike({ title: "soln-section9" }));
+  assert.ok(isAnswerKeyLike({ title: "F26_Stat_134_midterm-practice1-brief-soln" }));
+  assert.ok(isAnswerKeyLike({ title: "hw2_solns" }));
   assert.ok(!isAnswerKeyLike({ title: "Solstice reading" }));
   assert.ok(!isAnswerKeyLike({ title: "Lecture 7 — Cellular Respiration" }));
 });

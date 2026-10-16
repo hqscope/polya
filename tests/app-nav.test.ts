@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { courseNavLabel, currentPlaceLabel, isCoursePath } from "../src/lib/app-nav.ts";
+import { courseNavLabel, courseTab, currentPlaceLabel, isCoursePath } from "../src/lib/app-nav.ts";
 
 const courses = [
   { id: "c1", name: "Data Structures", code: "CS 61B" },
@@ -32,4 +32,14 @@ test("the phone menu button names where you are", () => {
   assert.equal(currentPlaceLabel("/app/courses/c2", courses), "Organic Chemistry");
   // A course that isn't in the list (just deleted, say) reads as the list.
   assert.equal(currentPlaceLabel("/app/courses/unknown", courses), "My courses");
+});
+
+test("courseTab maps course paths to their tab, whole segments only", () => {
+  assert.equal(courseTab("/app/courses/c1", "c1"), "chat");
+  assert.equal(courseTab("/app/courses/c1/study", "c1"), "study");
+  assert.equal(courseTab("/app/courses/c1/study/e9", "c1"), "study");
+  assert.equal(courseTab("/app/courses/c1/materials", "c1"), "materials");
+  assert.equal(courseTab("/app/courses/c1/studying", "c1"), null);
+  assert.equal(courseTab("/app/courses/c10/study", "c1"), null);
+  assert.equal(courseTab("/app", "c1"), null);
 });

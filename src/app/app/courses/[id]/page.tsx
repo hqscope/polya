@@ -5,6 +5,9 @@ import { getAuthenticatedAppUser } from "@/lib/auth/session";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
 import ChatView from "@/components/chat/ChatView";
 import type { ChatMessage } from "@/components/chat/MessageBubble";
+import { buildPracticeSeed } from "../../../../../supabase/functions/_shared/study-seed.ts";
+import type { PartResponse, PartResult } from "../../../../../supabase/functions/_shared/study-grade.ts";
+import type { PublicPart } from "../../../../../supabase/functions/_shared/study-questions.ts";
 import {
   RECENT_CONVERSATION_LIMIT,
   toRecentConversations,
@@ -34,7 +37,7 @@ export default async function CoursePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ c?: string }>;
+  searchParams: Promise<{ c?: string; practice?: string }>;
 }) {
   const { user, supabase, outage } = await getAuthenticatedAppUser();
   if (outage) {
@@ -44,7 +47,7 @@ export default async function CoursePage({
     return redirectToLogin();
   }
   const { id } = await params;
-  const { c: conversationId } = await searchParams;
+  const { c: conversationId, practice: practiceId } = await searchParams;
 
   const [{ data: course, error: courseError }, { data: policy }, { data: recentRows }] = await Promise.all([
     supabase
@@ -94,6 +97,36 @@ export default async function CoursePage({
     })) as ChatMessage[];
   }
 
+  // "Talk it through" from Study: the practice question (and the student's
+  // latest answer to it) goes in the box, for the student to edit and send.
+  let initialInput = "";
+  if (practiceId && !conversationId) {
+    const [{ data: question }, { data: attempt }] = await Promise.all([
+      supabase
+        .from("polya_practice_questions")
+        .select("stem, parts")
+        .eq("id", practiceId)
+        .eq("course_id", id)
+        .maybeSingle(),
+      supabase
+        .from("polya_practice_attempts")
+        .select("responses, results")
+        .eq("question_id", practiceId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    if (question) {
+      const results = (attempt?.results ?? null) as PartResult[] | null;
+      initialInput = buildPracticeSeed({
+        stem: question.stem as string,
+        parts: question.parts as PublicPart[],
+        responses: (attempt?.responses ?? null) as PartResponse[] | null,
+        correct: results ? results.map((r) => (r.ok ? r.correct : false)) : null,
+      });
+    }
+  }
+
   const recentConversations = toRecentConversations(
     (recentRows ?? []) as ConversationRow[],
     new Date(),
@@ -103,13 +136,14 @@ export default async function CoursePage({
     // Keyed by conversation: the chat's state starts from these props, so
     // moving between conversations (or back to a new one) must remount it.
     <ChatView
-      key={conversationId ?? "new"}
+      key={conversationId ?? (practiceId ? `practice-${practiceId}` : "new")}
       courseId={id}
       courseName={course.name}
       initialPolicyMode={(policy?.mode as string) ?? "guided"}
       initialConversationId={conversationId}
       initialMessages={initialMessages}
       recentConversations={recentConversations}
+      initialInput={initialInput}
     />
   );
 }

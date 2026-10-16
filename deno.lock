@@ -79,6 +79,7 @@
         "npm:@types/react@19",
         "npm:eslint-config-next@16.3.8",
         "npm:eslint@9",
+        "npm:katex@~0.16.47",
         "npm:lucide-react@0.563",
         "npm:next@16.3.8",
         "npm:pdf-lib@^1.17.1",

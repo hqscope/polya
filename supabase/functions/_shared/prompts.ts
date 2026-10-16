@@ -10,7 +10,8 @@ import type { RetrievedUnit } from "./retrieval-types.ts";
 // wrapper and forge the next block — a course PDF containing the literal
 // `</course_evidence>` was already enough before this existed.
 // ---------------------------------------------------------------------------
-const UNTRUSTED_WRAPPERS = "lecture_context|course_evidence|study_note|check_question";
+const UNTRUSTED_WRAPPERS =
+  "lecture_context|course_evidence|study_note|check_question|exam_scope|exam_examples|past_exam|formula_sheet|course_files|syllabus";
 const WRAPPER_TAG_RE = new RegExp(`<(/?)(?=(?:${UNTRUSTED_WRAPPERS})\\b)`, "gi");
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
@@ -66,7 +67,9 @@ stuck across turns. Drop back to L0/L1 for a brand-new question. Purely conceptu
 questions are not laddered — answer them directly and well.
 
 STYLE
-- Lead with what helps. Short paragraphs, plain-text math (no LaTeX). Warm and direct.
+- Lead with what helps. Short paragraphs. Warm and direct.
+- Write math in LaTeX: \\( ... \\) inline and \\[ ... \\] for a displayed equation. Never use $ for
+  math; course problems use $ for money.
 - Prefer a question that moves the student forward over a wall of exposition.`;
 
 // ---------------------------------------------------------------------------
