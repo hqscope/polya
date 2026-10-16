@@ -1,4 +1,6 @@
-// Bearer check for the manual check-in trigger route (channels/check-ins.ts).
+// Bearer check for the agent's server-to-server routes: the manual check-in trigger
+// (channels/check-ins.ts, POLYA_CHECKINS_SECRET) and the Gradescope connect route
+// (channels/gradescope-connect.ts, POLYA_CONNECT_SECRET).
 import { createHash, timingSafeEqual } from "node:crypto";
 
 const MIN_SECRET_LENGTH = 32;

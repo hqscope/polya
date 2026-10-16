@@ -15,8 +15,9 @@ export const NEXT_PATH_HEADER = "x-polya-next-path";
 
 // Only places inside the signed-in app are valid destinations, plus the page
 // that links a phone to Polya from the link Polya texts (it needs a signed-in
-// student and must come back with its `?code=`).
-const ALLOWED_PREFIXES = ["/app", "/connect/imessage"];
+// student and must come back with its `?code=`), and the page that reconnects
+// a student's Gradescope account.
+const ALLOWED_PREFIXES = ["/app", "/connect/imessage", "/connect/gradescope"];
 
 const MAX_LENGTH = 2048;
 

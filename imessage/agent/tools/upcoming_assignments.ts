@@ -14,7 +14,7 @@ const MAX_RESULTS = 20;
 const GRADESCOPE_NOTE: Record<GradescopeState, string> = {
   connected: "Submission status comes from Gradescope where the assignment is on Gradescope.",
   not_connected: "Gradescope isn't connected, so submission status is unknown.",
-  needs_reconnect: "The student's Gradescope connection expired, so submission status is unknown.",
+  needs_reconnect: "The student's Gradescope connection expired or stopped working, so submission status is unknown. reconnect_link gives them the link to fix it.",
   error: "Gradescope couldn't be checked right now, so submission status is unknown.",
 };
 

@@ -270,6 +270,11 @@ function classifyAssignment(
   return null;
 }
 
+/** True when it's the student's quiet hours right now, in their own time zone. */
+export function inQuietHours(link: Pick<CheckInLink, "timezone" | "quietStart" | "quietEnd">, now: Date): boolean {
+  return isQuietHour(localClock(now, resolveTimeZone(link.timezone)).hour, link.quietStart, link.quietEnd);
+}
+
 /**
  * True when `hour` falls in [start, end), wrapping past midnight when start > end
  * (22 -> 8 covers 22:00 to 07:59). Equal start and end means no quiet hours.

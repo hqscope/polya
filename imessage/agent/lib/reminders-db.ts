@@ -19,10 +19,10 @@ import {
   writeGradescopeBaseline,
 } from "./check-ins-db.ts";
 import { serviceDb } from "./db.ts";
-import { GradescopeError } from "./gradescope/client.ts";
 import { listGradescopeAssignments } from "./gradescope/store.ts";
 import type { GsAssignment } from "./gradescope/types.ts";
 import { isMissingTableError } from "./notes.ts";
+import { needsGradescopeReconnect } from "./reconnect.ts";
 import {
   BASELINE_SENT_AT,
   canvasItemKey,
@@ -46,7 +46,11 @@ const MAX_CANVAS_ROWS = 50;
 /** Gradescope is read live (cached 10 minutes); a slow read shouldn't stall the loop. */
 const GRADESCOPE_TIMEOUT_MS = 15_000;
 
-/** "error": connected, but it couldn't be read this time. "needs_reconnect": the session expired. */
+/**
+ * "error": connected, but it couldn't be read this time. "needs_reconnect": the sign-in stopped
+ * working (expired session, rejected password, or school sign-in now required); only the student
+ * can fix it.
+ */
 export type GradescopeState = "connected" | "not_connected" | "needs_reconnect" | "error";
 
 export interface StudentAssignments {
@@ -238,7 +242,11 @@ export async function saveMarks(
   return "saved";
 }
 
-async function readGradescope(userId: string): Promise<{ assignments: GsAssignment[] | null; state: GradescopeState }> {
+/**
+ * One read of the student's Gradescope assignments, with a timeout. Never throws. Cached 10 minutes
+ * per process (store.ts), so the reconnect pass right after check-ins doesn't sign in again.
+ */
+export async function readGradescope(userId: string): Promise<{ assignments: GsAssignment[] | null; state: GradescopeState }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), GRADESCOPE_TIMEOUT_MS);
@@ -252,12 +260,11 @@ async function readGradescope(userId: string): Promise<{ assignments: GsAssignme
     return result === null ? { assignments: null, state: "not_connected" } : { assignments: result, state: "connected" };
   } catch (error) {
     // Reminders still go out without Gradescope; they say the status is unknown.
-    const expired = error instanceof GradescopeError && error.code === "session_expired";
     console.error("[polya reminders] couldn't read Gradescope", {
       userId,
       error: error instanceof Error ? error.message : String(error),
     });
-    return { assignments: null, state: expired ? "needs_reconnect" : "error" };
+    return { assignments: null, state: needsGradescopeReconnect(error) ? "needs_reconnect" : "error" };
   } finally {
     clearTimeout(timer);
   }

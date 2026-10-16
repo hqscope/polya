@@ -9,6 +9,7 @@ import { z } from "zod";
 
 import { serviceDb } from "../db.ts";
 import { isMissingTableError } from "../notes.ts";
+import { isGradescopeReconnectCode } from "../reconnect.ts";
 import { open, seal, SECRET_KEY_VERSION } from "../secret-box.ts";
 import { GradescopeClient, GradescopeError, type GradescopeClientOptions } from "./client.ts";
 import type { GsAssignment, GsSession } from "./types.ts";
@@ -105,11 +106,21 @@ export function selectRelevantAssignments(all: readonly GsAssignment[], now: Dat
     .sort((a, b) => Date.parse(a.due_at ?? "") - Date.parse(b.due_at ?? ""));
 }
 
-async function restoreClient(
-  db: SupabaseClient,
-  row: ConnectionRow,
-  options: GradescopeClientOptions,
-): Promise<GradescopeClient> {
+/**
+ * last_error as stored: `<code>: <message>`, so readers (lastErrorCode) can tell a sign-in only the
+ * student can fix from a passing network failure.
+ */
+export function describeGradescopeError(error: GradescopeError): string {
+  return `${error.code}: ${error.message}`;
+}
+
+/** The GradescopeError code at the start of a stored last_error, or null. */
+export function lastErrorCode(lastError: string | null): string | null {
+  return /^([a-z_]+):/.exec(lastError ?? "")?.[1] ?? null;
+}
+
+/** Restores the saved session; when it expired, signs in again with the saved password if any. */
+async function restoreClient(row: ConnectionRow, options: GradescopeClientOptions): Promise<GradescopeClient> {
   const session = JSON.parse(open(row.session_ciphertext)) as GsSession;
   const client = GradescopeClient.fromSession(session, options);
   if (await client.verify()) return client;
@@ -118,9 +129,17 @@ async function restoreClient(
     await client.loginWithPassword(row.email, open(row.password_ciphertext));
     return client;
   }
-  const message = "Gradescope session expired; reconnect with a fresh session cookie";
-  await updateConnection(db, row.user_id, { last_error: message });
-  throw new GradescopeError("session_expired", message);
+  throw new GradescopeError("session_expired", "Gradescope session expired; reconnect with a fresh session cookie");
+}
+
+/** Stores the refreshed session after a successful read or check. */
+async function saveRefreshedSession(db: SupabaseClient, userId: string, client: GradescopeClient): Promise<void> {
+  await updateConnection(db, userId, {
+    session_ciphertext: seal(JSON.stringify(client.exportSession())),
+    key_version: SECRET_KEY_VERSION,
+    verified_at: new Date().toISOString(),
+    last_error: null,
+  });
 }
 
 async function fetchAssignments(userId: string, db: SupabaseClient, options: GradescopeClientOptions): Promise<GsAssignment[] | null> {
@@ -128,34 +147,81 @@ async function fetchAssignments(userId: string, db: SupabaseClient, options: Gra
   if (!row) return null;
 
   let client: GradescopeClient;
+  const all: GsAssignment[] = [];
   try {
-    client = await restoreClient(db, row, options);
-  } catch (error) {
-    if (error instanceof GradescopeError && error.code !== "session_expired") {
-      await updateConnection(db, userId, { last_error: `${error.code}: ${error.message}` });
+    client = await restoreClient(row, options);
+    const courses = (await client.listCourses()).filter((c) => c.role === "student");
+    for (const course of courses) {
+      try {
+        all.push(...(await client.listAssignments(course.course_id, course)));
+      } catch (error) {
+        if (error instanceof GradescopeError && error.code === "session_expired") throw error;
+        // One unreadable course shouldn't hide the others.
+        console.error(`[polya-imessage] gradescope course ${course.course_id} skipped:`, error instanceof Error ? error.message : error);
+      }
     }
+  } catch (error) {
+    // Every failure is recorded, so the reconnect notice (reconnect.ts) and the web page's status
+    // can tell an expired sign-in from a passing network error.
+    if (error instanceof GradescopeError) await updateConnection(db, userId, { last_error: describeGradescopeError(error) });
     throw error;
   }
 
-  const courses = (await client.listCourses()).filter((c) => c.role === "student");
-  const all: GsAssignment[] = [];
-  for (const course of courses) {
-    try {
-      all.push(...(await client.listAssignments(course.course_id, course)));
-    } catch (error) {
-      if (error instanceof GradescopeError && error.code === "session_expired") throw error;
-      // One unreadable course shouldn't hide the others.
-      console.error(`[polya-imessage] gradescope course ${course.course_id} skipped:`, error instanceof Error ? error.message : error);
-    }
-  }
-
-  await updateConnection(db, userId, {
-    session_ciphertext: seal(JSON.stringify(client.exportSession())),
-    key_version: SECRET_KEY_VERSION,
-    verified_at: new Date().toISOString(),
-    last_error: null,
-  });
+  await saveRefreshedSession(db, userId, client);
   return selectRelevantAssignments(all);
+}
+
+export type GradescopeCheck = "working" | "needs_reconnect" | "not_connected" | "unknown";
+
+/**
+ * A live check of the saved sign-in (one account-page request, or a fresh sign-in for a password
+ * account whose session expired), for the reconnect_link tool. Records the outcome like a read does.
+ */
+export async function checkGradescopeConnection(
+  userId: string,
+  db: SupabaseClient = serviceDb(),
+  options: GradescopeClientOptions = { timeoutMs: 10_000 },
+): Promise<GradescopeCheck> {
+  const row = await loadConnection(db, userId);
+  if (!row) return "not_connected";
+  try {
+    const client = await restoreClient(row, options);
+    await saveRefreshedSession(db, userId, client);
+    // A failure cached from before the student reconnected is stale now.
+    const hit = cache.get(userId);
+    if (hit && "error" in hit) cache.delete(userId);
+    return "working";
+  } catch (error) {
+    if (!(error instanceof GradescopeError)) {
+      console.error("[polya-imessage] gradescope check failed:", error instanceof Error ? error.message : error);
+      return "unknown";
+    }
+    await updateConnection(db, userId, { last_error: describeGradescopeError(error) });
+    return isGradescopeReconnectCode(error.code) ? "needs_reconnect" : "unknown";
+  }
+}
+
+export interface GradescopeConnectionStatus {
+  /** A saved connection whose last read or check didn't end in a sign-in problem. */
+  connected: boolean;
+  /** Whether the saved sign-in needs the student to reconnect. */
+  needs_reconnect: boolean;
+  /**
+   * The recorded sign-in problem the student has to fix, or null. A passing failure (network,
+   * Gradescope down) stays null: the connection still counts as connected.
+   */
+  last_error: string | null;
+}
+
+/** The stored connection state, without contacting Gradescope. */
+export async function loadGradescopeConnectionStatus(
+  userId: string,
+  db: SupabaseClient = serviceDb(),
+): Promise<GradescopeConnectionStatus> {
+  const row = await loadConnection(db, userId);
+  if (!row) return { connected: false, needs_reconnect: false, last_error: null };
+  const needsReconnect = isGradescopeReconnectCode(lastErrorCode(row.last_error));
+  return { connected: !needsReconnect, needs_reconnect: needsReconnect, last_error: needsReconnect ? row.last_error : null };
 }
 
 const cache = new Map<string, { expiresAt: number; value: GsAssignment[] } | { expiresAt: number; error: unknown }>();

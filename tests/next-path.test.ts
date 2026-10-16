@@ -111,6 +111,42 @@ test("whatever comes out stays on this site and inside /app", () => {
   }
 });
 
+test("the Gradescope reconnect page is a return path", () => {
+  assert.equal(sanitizeNextPath("/connect/gradescope"), "/connect/gradescope");
+  assert.equal(loginPathFor("/connect/gradescope"), "/login?next=%2Fconnect%2Fgradescope");
+  // Round trip: what /login reads back is the same path.
+  const next = new URL(loginPathFor("/connect/gradescope"), SITE).searchParams.get("next");
+  assert.equal(sanitizeNextPath(next), "/connect/gradescope");
+});
+
+test("allowing the Gradescope page doesn't open anything next to it", () => {
+  for (const raw of [
+    "/connect",
+    "/connect/",
+    "/connect/gradescopex",
+    "/connect/gradescope-evil",
+    "/CONNECT/GRADESCOPE",
+    "/connect/gradescope/../../login",
+    "/connect/gradescope/%2e%2e/%2e%2e/evil.example",
+    "/connect/gradescope/..//evil.example",
+    "//connect/gradescope",
+    "/\\connect/gradescope",
+    "https://evil.example/connect/gradescope",
+  ]) {
+    const safe = sanitizeNextPath(raw);
+    const url = landsOn(safe);
+    assert.equal(url.origin, SITE, `${JSON.stringify(raw)} -> ${safe}`);
+    assert.ok(
+      url.pathname === "/app" ||
+        url.pathname.startsWith("/app/") ||
+        url.pathname === "/connect/gradescope" ||
+        url.pathname.startsWith("/connect/gradescope/"),
+      `${JSON.stringify(raw)} -> ${url.pathname}`,
+    );
+    assert.equal(safe, DEFAULT_NEXT_PATH, JSON.stringify(raw));
+  }
+});
+
 test("the sign-in URL carries the page, encoded, or /app", () => {
   assert.equal(
     loginPathFor("/app/courses/abc"),
