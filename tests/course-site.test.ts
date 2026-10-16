@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import {
   classifyLink,
   crawlCourseSite,
+  diffSiteSources,
   katexToTex,
+  notebookRawUrl,
+  notebookViewUrl,
   MAX_FILES_PER_PAGE,
   normalizeSiteUrl,
   pageMainText,
@@ -102,8 +105,26 @@ test("classifyLink sorts pages, hosted PDFs, Google files, and everything else",
   assert.equal(classifyLink("https://ds100.org/", START).type, "skip"); // ancestor of the prefix
   assert.equal(classifyLink("https://ds100.org/fa26/assets/logo.png", START).type, "skip");
   assert.equal(classifyLink("https://youtu.be/IW1DjUDsrXw", START).type, "skip");
+  // A PDF the course links counts wherever it's hosted; other hosts' pages don't.
+  assert.deepEqual(classifyLink("http://inst.eecs.berkeley.edu/~ee16a/Note2A.pdf", START), {
+    type: "pdf",
+    url: "https://inst.eecs.berkeley.edu/~ee16a/Note2A.pdf",
+  });
+  assert.equal(classifyLink("https://inst.eecs.berkeley.edu/~ee16a/", START).type, "skip");
   const slides = classifyLink("https://docs.google.com/presentation/d/1RdQ6GfThXsz4Pt6x05_eVIadIHld__5ArsSDLZn7E7A/edit", START);
   assert.deepEqual(slides, { type: "google", ref: { kind: "slides", id: "1RdQ6GfThXsz4Pt6x05_eVIadIHld__5ArsSDLZn7E7A" } });
+});
+
+test("notebook links resolve to the raw file and back to a readable GitHub page", () => {
+  const hub = "https://data100.datahub.berkeley.edu/hub/user-redirect/git-pull?repo=https%3A%2F%2Fgithub.com%2FDS-100%2Ffa26-student&branch=main&urlpath=lab%2Ftree%2Ffa26-student%2Fhw%2Fhw01%2Fhw01.ipynb";
+  const raw = "https://raw.githubusercontent.com/DS-100/fa26-student/main/hw/hw01/hw01.ipynb";
+  assert.equal(notebookRawUrl(hub), raw);
+  assert.equal(notebookRawUrl("https://github.com/DS-100/fa26-student/blob/main/hw/hw01/hw01.ipynb"), raw);
+  assert.equal(notebookRawUrl(raw), raw);
+  assert.equal(notebookRawUrl("https://github.com/DS-100/fa26-student/tree/main/hw"), null);
+  assert.equal(notebookRawUrl("https://example.edu/hw01.ipynb"), null);
+  assert.equal(notebookViewUrl(raw), "https://github.com/DS-100/fa26-student/blob/main/hw/hw01/hw01.ipynb");
+  assert.deepEqual(classifyLink(hub, START), { type: "notebook", rawUrl: raw });
 });
 
 test("titles: <title> splits into page and site parts; generic link text borrows the page title", () => {
@@ -157,6 +178,42 @@ test("crawlCourseSite follows in-prefix pages (nav included) and collects files"
   assert.equal(crawl.files[0]!.pageTitle, "Past Exams");
 });
 
+test("crawlCourseSite picks up embedded Google files and notebooks", async () => {
+  const site: Record<string, string> = {
+    [START]: page("Schedule", "Data 100", `
+      <a href="https://data100.datahub.berkeley.edu/hub/user-redirect/git-pull?repo=https://github.com/DS-100/fa26-student&subpath=lec/lec12/lec12.ipynb">Jupyter Notebook</a>
+      <a href="https://github.com/DS-100/fa26-student/blob/main/hw/hw01/hw01.ipynb">Food Safety I</a>
+      <iframe src="https://docs.google.com/presentation/d/1RdQ6GfThXsz4Pt6x05_eVIadIHld__5ArsSDLZn7E7A/embed?start=false"></iframe>`),
+  };
+  const crawl = await crawlCourseSite(START, async (url) => (site[url] ? { url, html: site[url]! } : null));
+  assert.deepEqual(crawl.googleFiles.map((f) => [f.ref.kind, f.title]), [["slides", "Schedule"]]);
+  assert.deepEqual(crawl.notebooks.map((n) => [n.rawUrl.split("/").pop(), n.title]), [
+    ["lec12.ipynb", "Schedule — Jupyter Notebook"],
+    ["hw01.ipynb", "Food Safety I"],
+  ]);
+  const rows = planSiteSources(crawl, "u", "c");
+  const hw = rows.find((r) => r.title === "Food Safety I")!;
+  assert.equal(hw.origin, "site_page");
+  assert.equal(hw.canvas_id, "https://raw.githubusercontent.com/DS-100/fa26-student/main/hw/hw01/hw01.ipynb");
+  assert.equal(hw.canvas_url, "https://github.com/DS-100/fa26-student/blob/main/hw/hw01/hw01.ipynb");
+  assert.equal(hw.content_role, "assignment");
+  assert.equal(rows.find((r) => r.title === "Schedule — Jupyter Notebook")!.content_role, "material");
+});
+
+test("crawlCourseSite skips what robots.txt disallows and stops at the time budget", async () => {
+  const blocked = await crawlCourseSite(START, fetchSite, { allows: (url) => !url.includes("/pastexams/") });
+  assert.ok(!blocked.pages.some((p) => p.url.includes("/pastexams/")));
+  assert.equal(blocked.files.length, 0, "files on a disallowed page are never seen");
+
+  let clock = 0;
+  const timed = await crawlCourseSite(START, async (url) => {
+    clock += 1000;
+    return fetchSite(url);
+  }, { deadline: 500, now: () => clock });
+  assert.equal(timed.pages.filter((p) => p.crawled).length, 1, "the start page is always read");
+  assert.equal(timed.truncated, true);
+});
+
 test("crawlCourseSite fails only when the start page can't be read", async () => {
   await assert.rejects(crawlCourseSite("https://nowhere.edu/c/", async () => null), SiteUnreachableError);
   const partial = await crawlCourseSite(START, async (url) => (url === START ? fetchSite(url) : null));
@@ -190,4 +247,29 @@ test("planSiteSources orders by value, assigns roles, and keys sources stably", 
     assert.ok(row.canvas_id, "every web source has a stable identity");
   }
   assert.equal(new Set(rows.map((r) => `${r.origin}:${r.canvas_id}`)).size, rows.length);
+});
+
+test("diffSiteSources: the scheduled check re-reads the site's own pages, adds new items, leaves files alone", async () => {
+  const planned = planSiteSources(await crawlCourseSite(START, fetchSite), "u", "c");
+  const existing = planned
+    .filter((row) => row.title !== "Discussion 6: Ordinary Least Squares — Solutions") // posted since the last check
+    .map((row, i) => ({
+      id: `row-${i}`,
+      origin: row.origin,
+      canvas_id: row.canvas_id,
+      canvas_updated_at: null,
+      status: "ready",
+      due_at: null,
+      title: row.title,
+      canvas_url: row.canvas_url,
+    }));
+
+  const auto = diffSiteSources(planned, existing, "auto", START);
+  assert.deepEqual(auto.toInsert.map((row) => row.title), ["Discussion 6: Ordinary Least Squares — Solutions"]);
+  const refreshed = new Set(auto.toRefresh.map((r) => existing.find((e) => e.id === r.id)!));
+  assert.ok([...refreshed].every((row) => row.origin === "site_page" && row.canvas_id!.startsWith(START)));
+  assert.equal(refreshed.size, planned.filter((r) => r.origin === "site_page" && r.canvas_id!.startsWith(START)).length);
+
+  assert.equal(diffSiteSources(planned, existing, "new", START).toRefresh.length, 0);
+  assert.equal(diffSiteSources(planned, existing, "force", START).toRefresh.length, existing.length);
 });

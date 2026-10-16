@@ -11,7 +11,7 @@ import { currentPlaceLabel } from "@/lib/app-nav";
 
 // The sidebar's stand-in below the `md` breakpoint (phones, narrow windows):
 // a compact top bar whose menu holds everything the sidebar does — My courses,
-// Connect Canvas, the course list, imports in progress, and Sign out.
+// Add a course, the course list, imports in progress, and Sign out.
 export default function MobileNav({
   courses,
   displayName,

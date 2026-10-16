@@ -6,13 +6,16 @@
 // Crawl scope: pages on the start URL's host whose path is under the start
 // path ("the prefix") are fetched and followed. Same-host pages outside the
 // prefix that an in-prefix page links (shared course notes, a debugging guide)
-// are queued as sources but not followed further. Other hosts are ignored,
-// except Google file links.
+// are queued as sources but not followed further. Pages on other hosts are
+// ignored; files they link are not — PDFs on any host, Google Drive / Slides /
+// Docs (linked or embedded), and Jupyter notebooks (GitHub or "open in
+// DataHub" links) all become sources.
 import { decodeEntities, stripHtmlToText } from "./canvas.ts";
 import { classifyContentRole, type ContentRole } from "./content-roles.ts";
-import type { EnumeratedSource } from "./enumerate.ts";
+import { diffSources, type EnumeratedSource, type ExistingSourceRow, type SourceDiff } from "./enumerate.ts";
 import { assertPublicUrl, UnsafeUrlError } from "./safe-fetch.ts";
 import { type GoogleFileRef, googleSourceKey, googleViewUrl, parseGoogleFileLink } from "./google-drive.ts";
+import { notebookLinkToRaw } from "./site-policy.ts";
 
 /** In-prefix pages fetched while enumerating (a term's site is ~50). */
 export const MAX_CRAWL_PAGES = 120;
@@ -26,7 +29,11 @@ export const MAX_SITE_SOURCES = 400;
 export const MAX_HTML_BYTES = 8 * 1024 * 1024;
 /** Hosted PDFs larger than this aren't downloaded. */
 export const MAX_SITE_FILE_BYTES = 50 * 1024 * 1024;
-const CRAWL_CONCURRENCY = 6;
+/** Notebooks are JSON and may carry saved outputs (which are dropped). */
+export const MAX_NOTEBOOK_BYTES = 20 * 1024 * 1024;
+// A few pages at a time: class sites are small static hosts, and a burst gets
+// throttled.
+const CRAWL_CONCURRENCY = 4;
 
 export class SiteUrlError extends Error {
   constructor(message = "That doesn't look like a course website address.") {
@@ -82,6 +89,23 @@ export function extractMainHtml(html: string): string {
 
 function tagText(fragment: string): string {
   return decodeEntities(fragment.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+/** Every <iframe>/<embed> src in the HTML (Google Sites and many class sites embed slides this way). */
+export function extractEmbeds(html: string, pageUrl: string): SiteLink[] {
+  const out: SiteLink[] = [];
+  const re = /<(?:iframe|embed)\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(html)) !== null) {
+    const src = decodeEntities((match[1] ?? match[2] ?? "").trim());
+    if (!src) continue;
+    try {
+      out.push({ url: new URL(src, pageUrl).toString(), text: "" });
+    } catch {
+      // not a usable address
+    }
+  }
+  return out;
 }
 
 /** Every <a href> in the HTML, resolved against the page URL. */
@@ -183,22 +207,56 @@ function pdfTitle(linkText: string, url: string): string {
 
 function fileNameTitle(url: string): string {
   const name = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "");
-  return name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || "Course file";
+  return name.replace(/\.(pdf|ipynb)$/i, "").replace(/[_-]+/g, " ").trim() || "Course file";
 }
 
-// Same-host links to things that aren't pages or PDFs (images, notebooks,
-// datasets, styles) — skipped.
+/**
+ * The raw file behind a notebook link: an "open in DataHub" (nbgitpuller)
+ * link, a GitHub file page, or a raw GitHub file. Null for anything else.
+ */
+export function notebookRawUrl(link: string): string | null {
+  const viaHub = notebookLinkToRaw(link);
+  if (viaHub) return /\.ipynb$/i.test(new URL(viaHub).pathname) ? viaHub : null;
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return null;
+  }
+  if (!/\.ipynb$/i.test(url.pathname)) return null;
+  const host = url.hostname.toLowerCase();
+  if (host === "raw.githubusercontent.com") return `https://${host}${url.pathname}`;
+  if (host === "github.com") {
+    const [owner, repo, kind, ...rest] = url.pathname.split("/").filter(Boolean);
+    if (owner && repo && (kind === "blob" || kind === "raw") && rest.length >= 2) {
+      return `https://raw.githubusercontent.com/${[owner, repo, ...rest].join("/")}`;
+    }
+  }
+  return null;
+}
+
+/** The GitHub page for a raw notebook, for "Open original". */
+export function notebookViewUrl(rawUrl: string): string {
+  const [owner, repo, ...rest] = new URL(rawUrl).pathname.split("/").filter(Boolean);
+  return owner && repo && rest.length >= 2 ? `https://github.com/${owner}/${repo}/blob/${rest.join("/")}` : rawUrl;
+}
+
+// Same-host links to things that aren't pages or PDFs (images, datasets,
+// styles) — skipped.
 const NON_PAGE_EXT = /\.(?!html?$)[a-z0-9]{1,6}$/i;
 
 export type LinkTarget =
   | { type: "page"; url: string; inPrefix: boolean }
   | { type: "pdf"; url: string }
   | { type: "google"; ref: GoogleFileRef }
+  | { type: "notebook"; rawUrl: string }
   | { type: "skip" };
 
 export function classifyLink(rawUrl: string, startUrl: string): LinkTarget {
   const google = parseGoogleFileLink(rawUrl);
   if (google) return { type: "google", ref: google };
+  const notebook = notebookRawUrl(rawUrl);
+  if (notebook) return { type: "notebook", rawUrl: notebook };
 
   let url: URL;
   try {
@@ -208,13 +266,14 @@ export function classifyLink(rawUrl: string, startUrl: string): LinkTarget {
   }
   const start = new URL(startUrl);
   if (url.protocol !== "https:" && url.protocol !== "http:") return { type: "skip" };
-  if (url.host.toLowerCase() !== start.host.toLowerCase()) return { type: "skip" };
-  // Same host over http is upgraded; the fetch itself is https-only.
+  // http is upgraded; the fetch itself is https-only.
   url.protocol = "https:";
 
+  // A PDF the course links is course material wherever it's hosted.
   if (/\.pdf$/i.test(url.pathname)) {
     return { type: "pdf", url: `${url.protocol}//${url.host.toLowerCase()}${url.pathname}` };
   }
+  if (url.host.toLowerCase() !== start.host.toLowerCase()) return { type: "skip" };
   if (NON_PAGE_EXT.test(url.pathname)) return { type: "skip" };
 
   const canonical = canonicalPageUrl(url);
@@ -245,6 +304,12 @@ export interface CrawledGoogleFile {
   pageTitle: string | null;
 }
 
+export interface CrawledNotebook {
+  rawUrl: string;
+  title: string;
+  pageTitle: string | null;
+}
+
 export interface SiteCrawl {
   startUrl: string;
   /** Best name for the course: the start page's heading, else the site part of its <title>. */
@@ -252,10 +317,21 @@ export interface SiteCrawl {
   pages: CrawledPage[];
   files: CrawledFile[];
   googleFiles: CrawledGoogleFile[];
+  notebooks: CrawledNotebook[];
+  /** True when the time budget or page cap stopped the crawl before the queue emptied. */
+  truncated: boolean;
 }
 
 /** Returns the page's HTML and final URL, or null when it couldn't be read as HTML. */
 export type FetchHtml = (url: string) => Promise<{ url: string; html: string } | null>;
+
+export interface CrawlOptions {
+  /** Stop starting new pages after this time (ms epoch); what's found so far is kept. */
+  deadline?: number;
+  now?: () => number;
+  /** Whether a same-host address may be read (robots.txt). Defaults to everything. */
+  allows?: (url: string) => boolean;
+}
 
 /** The start page couldn't be read. */
 export class SiteUnreachableError extends Error {
@@ -270,16 +346,27 @@ export class SiteUnreachableError extends Error {
  * deterministic (batch results are handled in queue order), so the first page
  * to link a file names it.
  */
-export async function crawlCourseSite(startUrl: string, fetchHtml: FetchHtml): Promise<SiteCrawl> {
+export async function crawlCourseSite(
+  startUrl: string,
+  fetchHtml: FetchHtml,
+  opts: CrawlOptions = {},
+): Promise<SiteCrawl> {
+  const now = opts.now ?? Date.now;
+  const allows = opts.allows ?? (() => true);
+  const startHost = new URL(startUrl).host.toLowerCase();
+  // robots.txt speaks for its own host only.
+  const allowed = (url: string) => new URL(url).host.toLowerCase() !== startHost || allows(url);
   const queue: string[] = [startUrl];
   const queued = new Set(queue);
   const pages: CrawledPage[] = [];
   const leaves = new Map<string, CrawledPage>();
   const files = new Map<string, CrawledFile>();
   const googleFiles = new Map<string, CrawledGoogleFile>();
+  const notebooks = new Map<string, CrawledNotebook>();
   let courseName: string | null = null;
 
   while (queue.length > 0 && pages.length < MAX_CRAWL_PAGES) {
+    if (pages.length > 0 && opts.deadline !== undefined && now() >= opts.deadline) break;
     const batch = queue.splice(0, Math.min(CRAWL_CONCURRENCY, MAX_CRAWL_PAGES - pages.length));
     const results = await Promise.all(batch.map((url) => fetchHtml(url).catch(() => null)));
 
@@ -303,8 +390,9 @@ export async function crawlCourseSite(startUrl: string, fetchHtml: FetchHtml): P
       // Links come from the whole page: class sites keep Syllabus / Resources /
       // Past Exams in a nav outside <main>. Off-site footer links are skipped
       // by classifyLink.
-      for (const link of extractLinks(html, result.url)) {
+      for (const link of [...extractLinks(html, result.url), ...extractEmbeds(html, result.url)]) {
         const target = classifyLink(link.url, startUrl);
+        if ((target.type === "page" || target.type === "pdf") && !allowed(target.url)) continue;
         if (target.type === "page") {
           if (target.inPrefix) {
             if (!queued.has(target.url)) {
@@ -326,6 +414,13 @@ export async function crawlCourseSite(startUrl: string, fetchHtml: FetchHtml): P
             title: titleForLink(link.text, pageTitle, "Course file"),
             pageTitle,
           });
+        } else if (target.type === "notebook") {
+          if (notebooks.has(target.rawUrl)) continue;
+          notebooks.set(target.rawUrl, {
+            rawUrl: target.rawUrl,
+            title: titleForLink(link.text, pageTitle, fileNameTitle(target.rawUrl)),
+            pageTitle,
+          });
         }
       }
     }
@@ -341,6 +436,8 @@ export async function crawlCourseSite(startUrl: string, fetchHtml: FetchHtml): P
     pages: [...pages, ...leafPages],
     files: Array.from(files.values()),
     googleFiles: Array.from(googleFiles.values()),
+    notebooks: Array.from(notebooks.values()),
+    truncated: queue.length > 0,
   };
 }
 
@@ -351,12 +448,21 @@ function siteRole(title: string, pageTitle: string | null): ContentRole {
   return classifyContentRole({ title, moduleName: pageTitle });
 }
 
+// Homework, lab and project notebooks are work to do, not reading.
+function notebookRole(nb: CrawledNotebook): ContentRole {
+  const role = siteRole(nb.title, nb.pageTitle);
+  if (role !== "material") return role;
+  return /\/(hw|homework|labs?|proj|projects?)[^/]*\//i.test(new URL(nb.rawUrl).pathname) ? "assignment" : "material";
+}
+
 /**
  * The crawl as queued polya_sources rows, highest value first and capped at
- * MAX_SITE_SOURCES: crawled pages, linked Google files, same-host pages
- * outside the prefix (shared course notes), then hosted PDFs. canvas_id holds
- * each source's stable identity (page/file URL, or "slides:<id>" for Google
- * files) so a re-import diffs against it like a Canvas id.
+ * MAX_SITE_SOURCES: crawled pages, linked Google files, notebooks, same-host
+ * pages outside the prefix (shared course notes), then PDFs. canvas_id holds
+ * each source's stable identity — the address it's fetched from (page, file,
+ * or raw notebook URL), or "slides:<id>" for Google files — so a re-import
+ * diffs against it like a Canvas id; canvas_url is where "Open original" goes.
+ * Notebooks are site_page rows: the pump turns them into text like a page.
  */
 export function planSiteSources(crawl: SiteCrawl, userId: string, courseId: string): EnumeratedSource[] {
   const base = {
@@ -390,6 +496,16 @@ export function planSiteSources(crawl: SiteCrawl, userId: string, courseId: stri
     canvas_url: googleViewUrl(f.ref),
     content_role: siteRole(f.title, f.pageTitle),
   }));
+  const notebooks = crawl.notebooks.map((nb): EnumeratedSource => ({
+    ...base,
+    origin: "site_page",
+    source_kind: "html",
+    canvas_id: nb.rawUrl,
+    title: nb.title.slice(0, TITLE_MAX),
+    module_name: nb.pageTitle,
+    canvas_url: notebookViewUrl(nb.rawUrl),
+    content_role: notebookRole(nb),
+  }));
   const hosted = crawl.files.map((f): EnumeratedSource => ({
     ...base,
     origin: "site_file",
@@ -400,5 +516,34 @@ export function planSiteSources(crawl: SiteCrawl, userId: string, courseId: stri
     canvas_url: f.url,
     content_role: siteRole(f.title, f.pageTitle),
   }));
-  return [...crawled, ...google, ...leaves, ...hosted].slice(0, MAX_SITE_SOURCES);
+  return [...crawled, ...google, ...notebooks, ...leaves, ...hosted].slice(0, MAX_SITE_SOURCES);
+}
+
+/**
+ * "new": queue only what isn't there yet (a student adding the site).
+ * "force": re-check everything ("Check for updates"; hash-compared, so
+ * unchanged items keep their passages). "auto": the scheduled check queues
+ * anything new and re-checks the site's own pages — small, and where weekly
+ * links and notices change — but leaves notes, notebooks and files to a
+ * manual check.
+ */
+export type SiteImportMode = "new" | "force" | "auto";
+
+export function diffSiteSources(
+  planned: EnumeratedSource[],
+  existing: ExistingSourceRow[],
+  mode: SiteImportMode,
+  startUrl: string,
+): SourceDiff {
+  if (mode !== "auto") return diffSources(planned, existing, mode === "force");
+  const prefix = sitePrefix(startUrl);
+  const ownPage = (row: { origin: string; canvas_id: string | null }) =>
+    row.origin === "site_page" && (row.canvas_id ?? "").startsWith(prefix);
+  const pages = diffSources(planned.filter(ownPage), existing.filter(ownPage), true);
+  const rest = diffSources(planned.filter((r) => !ownPage(r)), existing.filter((r) => !ownPage(r)), false);
+  return {
+    toInsert: [...pages.toInsert, ...rest.toInsert],
+    toRefresh: [...pages.toRefresh, ...rest.toRefresh],
+    toPatch: [...pages.toPatch, ...rest.toPatch],
+  };
 }

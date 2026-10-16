@@ -49,11 +49,20 @@ import {
   MAX_HTML_BYTES,
   normalizeSiteUrl,
   planSiteSources,
+  diffSiteSources,
   type SiteCrawl,
+  type SiteImportMode,
   SiteUnreachableError,
   SiteUrlError,
 } from "../_shared/course-site.ts";
 import { fetchPublic } from "../_shared/safe-fetch.ts";
+import {
+  ALLOW_ALL_ROBOTS,
+  assertPublicHost,
+  parseRobotsTxt,
+  robotsAllows,
+  type RobotsRules,
+} from "../_shared/site-policy.ts";
 import { WEB_ORIGINS } from "../_shared/web-sources.ts";
 import { bearerToken, secretMatches } from "../_shared/service-role.ts";
 import { nextPumpMove } from "../_shared/pump-plan.ts";
@@ -233,6 +242,12 @@ interface SiteStartBody {
   course_id?: string;
   force?: boolean;
 }
+// Internal: the scheduled re-check of one course's website (pg_cron →
+// polya_refresh_course_sites). Authenticated like the pump, not by a user.
+interface SiteRefreshBody {
+  action: "site_refresh";
+  course_id: string;
+}
 
 type Body =
   | StartBody
@@ -247,7 +262,8 @@ type Body =
   | SeedFixtureBody
   | ExtensionImportStartBody
   | ExtensionRegisterSourceBody
-  | SiteStartBody;
+  | SiteStartBody
+  | SiteRefreshBody;
 
 Deno.serve(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") {
@@ -278,6 +294,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     // JWT — handle it before requireAuthUser.
     if (body.action === "pump") {
       return await handlePump(request, body);
+    }
+    if (body.action === "site_refresh") {
+      return await handleSiteRefresh(request, body);
     }
 
     const user = await requireAuthUser(request);
@@ -759,6 +778,39 @@ async function applySourceDiff(diff: ReturnType<typeof diffSources>): Promise<vo
 // per student without colliding with Canvas ids.
 // ---------------------------------------------------------------------------
 const SITE_COURSE_PREFIX = "site:";
+// The crawl runs inside the student's request; past this it stops starting
+// pages and imports what it found (a slow or huge site can't time it out).
+const SITE_CRAWL_BUDGET_MS = 45_000;
+
+// The start host's DNS answers, so a public-looking name can't point the
+// crawl at a private address. Empty when the runtime can't resolve.
+async function resolveHost(hostname: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const type of ["A", "AAAA"] as const) {
+    try {
+      out.push(...(await Deno.resolveDns(hostname, type)));
+    } catch {
+      // no records of this type, or DNS lookups aren't available here
+    }
+  }
+  return out;
+}
+
+// robots.txt for the site's origin: rules when there are some, allow-all when
+// there's no file, null when the site is failing (RFC 9309: don't crawl then).
+async function loadRobots(origin: string): Promise<RobotsRules | null> {
+  try {
+    const response = await fetchPublic(fetch, `${origin}/robots.txt`, {
+      maxBytes: 512 * 1024,
+      accept: "text/plain",
+      timeoutMs: 10_000,
+    });
+    if (response.status === 200) return parseRobotsTxt(new TextDecoder().decode(response.bytes));
+    return ALLOW_ALL_ROBOTS;
+  } catch {
+    return null; // 5xx, 429 or unreachable
+  }
+}
 
 async function fetchSiteHtml(url: string): Promise<{ url: string; html: string } | null> {
   const response = await fetchPublic(fetch, url, {
@@ -769,35 +821,73 @@ async function fetchSiteHtml(url: string): Promise<{ url: string; html: string }
   return { url: response.url, html: new TextDecoder().decode(response.bytes) };
 }
 
-async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Response> {
-  let startUrl: string;
-  try {
-    startUrl = normalizeSiteUrl(String(body.url ?? ""));
-  } catch (error) {
-    if (error instanceof SiteUrlError) return json({ error: error.message, code: "bad_request" }, 400);
-    throw error;
+/** A reason the site can't be imported, worded for the student. */
+class SiteImportRefusal extends Error {
+  readonly code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = "SiteImportRefusal";
+    this.code = code;
   }
-  if (body.course_id) await assertCourseOwned(userId, body.course_id);
-  await assertStorageRoom(service, userId, STORAGE_BUCKET, null);
+}
+
+interface SiteImportResult {
+  courseId: string;
+  sourceCount: number;
+  queued: number;
+  refreshed: number;
+}
+
+async function importCourseSite(
+  userId: string,
+  startUrl: string,
+  courseId: string | null,
+  mode: SiteImportMode,
+): Promise<SiteImportResult> {
+  const start = new URL(startUrl);
+  try {
+    await assertPublicHost(start.hostname, resolveHost);
+  } catch {
+    throw new SiteImportRefusal("That address points somewhere Polya can't open.", "bad_request");
+  }
+  const robots = await loadRobots(start.origin);
+  if (!robots) {
+    throw new SiteImportRefusal(
+      "That website isn't answering right now. Try again in a little while.",
+      "site_unreachable",
+    );
+  }
+  if (!robotsAllows(robots, start.pathname)) {
+    throw new SiteImportRefusal(
+      "That website asks tools like Polya not to read it, so it can't be added.",
+      "site_blocked",
+    );
+  }
 
   let crawl: SiteCrawl;
   try {
-    crawl = await crawlCourseSite(startUrl, fetchSiteHtml);
+    crawl = await crawlCourseSite(startUrl, fetchSiteHtml, {
+      deadline: Date.now() + SITE_CRAWL_BUDGET_MS,
+      allows: (url) => {
+        const target = new URL(url);
+        return robotsAllows(robots, `${target.pathname}${target.search}`);
+      },
+    });
   } catch (error) {
     if (error instanceof SiteUnreachableError) {
-      return json(
-        { error: "We couldn't open that website. Check the address and try again.", code: "site_unreachable" },
-        400,
+      throw new SiteImportRefusal(
+        "We couldn't open that website. Check the address and try again.",
+        "site_unreachable",
       );
     }
     throw error;
   }
 
-  let courseId = body.course_id ?? null;
+  const checkedAt = new Date().toISOString();
   if (courseId) {
     const { error } = await service
       .from("polya_courses")
-      .update({ site_url: startUrl, import_status: "importing" })
+      .update({ site_url: startUrl, site_checked_at: checkedAt })
       .eq("id", courseId)
       .eq("user_id", userId);
     if (error) throw new Error(`course update failed: ${error.message}`);
@@ -808,9 +898,9 @@ async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Res
         {
           user_id: userId,
           canvas_course_id: `${SITE_COURSE_PREFIX}${startUrl}`,
-          name: crawl.courseName ?? new URL(startUrl).host,
+          name: crawl.courseName ?? start.host,
           site_url: startUrl,
-          import_status: "importing",
+          site_checked_at: checkedAt,
         },
         { onConflict: "user_id,canvas_course_id" },
       )
@@ -827,16 +917,24 @@ async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Res
     .eq("user_id", userId)
     .eq("course_id", courseId)
     .in("origin", Array.from(WEB_ORIGINS));
-  const diff = diffSources(sources, (existingRows ?? []) as ExistingSourceRow[], Boolean(body.force));
+  const diff = diffSiteSources(sources, (existingRows ?? []) as ExistingSourceRow[], mode, startUrl);
   await applySourceDiff(diff);
+
+  const changed = diff.toInsert.length + diff.toRefresh.length;
+  if (changed > 0) {
+    // Only now: a check that found nothing mustn't leave the course "importing".
+    await service.from("polya_courses").update({ import_status: "importing" }).eq("id", courseId).eq("user_id", userId);
+  }
 
   // Counts only (no content), like the Canvas enumeration log.
   console.log(
-    `[polya-import] site ${new URL(startUrl).host} enumerated:`,
+    `[polya-import] site ${start.host} enumerated (${mode}):`,
     JSON.stringify({
       pages: crawl.pages.length,
       hosted_files: crawl.files.length,
       google_files: crawl.googleFiles.length,
+      notebooks: crawl.notebooks.length,
+      truncated: crawl.truncated,
       queued_total: sources.length,
       inserted: diff.toInsert.length,
       refreshed: diff.toRefresh.length,
@@ -844,15 +942,75 @@ async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Res
     }),
   );
 
-  await kickPump(userId);
+  return { courseId, sourceCount: sources.length, queued: diff.toInsert.length, refreshed: diff.toRefresh.length };
+}
+
+async function handleSiteStart(userId: string, body: SiteStartBody): Promise<Response> {
+  let startUrl: string;
+  try {
+    startUrl = normalizeSiteUrl(String(body.url ?? ""));
+  } catch (error) {
+    if (error instanceof SiteUrlError) return json({ error: error.message, code: "bad_request" }, 400);
+    throw error;
+  }
+  if (body.course_id) await assertCourseOwned(userId, body.course_id);
+  await assertStorageRoom(service, userId, STORAGE_BUCKET, null);
+
+  let result: SiteImportResult;
+  try {
+    result = await importCourseSite(userId, startUrl, body.course_id ?? null, body.force ? "force" : "new");
+  } catch (error) {
+    if (error instanceof SiteImportRefusal) return json({ error: error.message, code: error.code }, 400);
+    throw error;
+  }
+
+  if (result.queued + result.refreshed > 0) await kickPump(userId);
   return json({
-    course_id: courseId,
+    course_id: result.courseId,
     site_url: startUrl,
-    source_count: sources.length,
-    queued: diff.toInsert.length,
-    refreshed: diff.toRefresh.length,
-    progress: await countProgress(userId, courseId),
+    source_count: result.sourceCount,
+    queued: result.queued,
+    refreshed: result.refreshed,
+    progress: await countProgress(userId, result.courseId),
   });
+}
+
+// Scheduled re-check of one course's website. Same credentials as the pump
+// (service-role key or the pump secret, never a user JWT); returns at once and
+// re-checks in the background, since pg_net doesn't wait for the crawl.
+async function handleSiteRefresh(request: Request, body: SiteRefreshBody): Promise<Response> {
+  const [serviceKeyOk, pumpSecretOk] = await Promise.all([
+    secretMatches(bearerToken(request), SERVICE_ROLE_KEY),
+    secretMatches(request.headers.get("x-polya-pump-secret"), PUMP_SECRET),
+  ]);
+  if (!serviceKeyOk && !pumpSecretOk) {
+    return json({ error: "Not authorized.", code: "forbidden" }, 403);
+  }
+  if (typeof body.course_id !== "string" || !body.course_id) {
+    return json({ error: "Missing course.", code: "bad_request" }, 400);
+  }
+  background(refreshCourseSite(body.course_id));
+  return json({ ok: true });
+}
+
+async function refreshCourseSite(courseId: string): Promise<void> {
+  try {
+    const { data: course } = await service
+      .from("polya_courses")
+      .select("user_id, site_url")
+      .eq("id", courseId)
+      .maybeSingle();
+    if (!course?.site_url) return;
+    const userId = course.user_id as string;
+    const result = await importCourseSite(userId, course.site_url as string, courseId, "auto");
+    if (result.queued + result.refreshed > 0) await kickPump(userId);
+  } catch (error) {
+    // A site that's down today is checked again on a later run.
+    console.warn(
+      `[polya-import] scheduled site check ${courseId} skipped:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
 }
 
 async function handleStatus(userId: string, courseId: string): Promise<Response> {

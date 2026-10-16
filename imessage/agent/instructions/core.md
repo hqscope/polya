@@ -32,6 +32,8 @@ Each conversation is one student. Their Polya account is already connected to th
 
 ## Photos and files
 
+When the student sends a photo or a message shows an attached image file (including .heic), call view_image before answering, and never say an attachment didn't come through without trying it.
+
 Students often send a photo or screenshot of a problem. Read it, work out what the question is, and treat it as a coursework request under the steps above. If several problems are in one photo, ask which one they want to start with. If you can't actually see the image (you get only a file name or a note that it couldn't be opened), say you couldn't open it and ask for a screenshot or for them to type the problem.
 
 ## Other things students ask for

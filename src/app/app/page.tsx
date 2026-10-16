@@ -44,12 +44,12 @@ export default async function AppHomePage() {
         <p className="eyebrow">Welcome</p>
         <h1 className="mt-3 text-[21px]">Bring in your first course</h1>
         <p className="mt-3 max-w-md text-[13px] leading-[1.65] text-ink2">
-          Connect your school&apos;s Canvas and Polya will study your course —
-          the readings, slides, and pages — so its help always comes from what
-          your class actually covers.
+          Bring in a course from Canvas or from its own website, and Polya will
+          study it — the readings, slides, and pages — so its help always comes
+          from what your class actually covers.
         </p>
         <Link href="/app/connect" className="button-primary mt-7">
-          Connect Canvas
+          Add a course
         </Link>
       </div>
     );
@@ -118,7 +118,7 @@ export default async function AppHomePage() {
           >
             <span className="text-[17px] leading-none font-medium">+</span>
             <span className="text-[12.5px] font-semibold">
-              Connect another course
+              Add another course
             </span>
           </Link>
         </div>

@@ -2,7 +2,8 @@
 // readable text, a PDF the site hosts, or a linked Google file (public export
 // first, then the student's own Google account). Pure module (fetch and the
 // Drive reader are injected) so Node's test runner covers it.
-import { MAX_HTML_BYTES, MAX_SITE_FILE_BYTES, pageMainText } from "./course-site.ts";
+import { MAX_HTML_BYTES, MAX_NOTEBOOK_BYTES, MAX_SITE_FILE_BYTES, pageMainText } from "./course-site.ts";
+import { notebookToHtml } from "./site-notebook.ts";
 import { fetchPublicGooglePdf, parseGoogleSourceKey } from "./google-drive.ts";
 import type { DriveReader } from "./drive-grant.ts";
 import {
@@ -55,13 +56,24 @@ async function get(fetchFn: FetchLike, url: string, maxBytes: number, accept: st
   }
 }
 
-/** A site page's main-content text, or null when the address isn't an HTML page. */
+/**
+ * A site page's main-content text, or a notebook's cells (outputs dropped);
+ * null when the address is neither an HTML page nor a notebook.
+ */
 export async function fetchSitePageText(url: string, fetchFn: FetchLike = fetch): Promise<string | null> {
-  const response = await get(fetchFn, url, MAX_HTML_BYTES, "text/html,application/xhtml+xml");
+  const notebook = /\.ipynb$/i.test(new URL(url).pathname);
+  const response = notebook
+    ? await get(fetchFn, url, MAX_NOTEBOOK_BYTES, "application/x-ipynb+json,application/json,text/plain")
+    : await get(fetchFn, url, MAX_HTML_BYTES, "text/html,application/xhtml+xml");
   if (response.status === 404 || response.status === 410) throw new WebSourceError(COPY.pageGone);
   if (response.status !== 200) throw new WebSourceError(COPY.pageUnreadable);
+  const body = new TextDecoder().decode(response.bytes);
+  if (notebook) {
+    const html = notebookToHtml(body, "");
+    return html ? pageMainText(html).slice(0, MAX_PAGE_TEXT_CHARS) : null;
+  }
   if (!/html/.test(response.contentType)) return null;
-  return pageMainText(new TextDecoder().decode(response.bytes)).slice(0, MAX_PAGE_TEXT_CHARS);
+  return pageMainText(body).slice(0, MAX_PAGE_TEXT_CHARS);
 }
 
 /** PDF bytes for a site_file or drive_file source. */

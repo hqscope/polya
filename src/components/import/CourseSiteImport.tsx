@@ -10,12 +10,17 @@ import { detectStorageFull } from "@/lib/storage-full-client";
 import { AI_BUSY_POLYA_IMPORT_DETAIL } from "@/lib/ai-busy";
 import { userMessage } from "@/lib/user-message";
 import { announceImportStarted } from "@/lib/import-events";
+import { type SiteCourseOption, suggestCourseForSite } from "@/lib/course-site-match";
+
+const NEW_COURSE = "new";
 
 interface Props {
-  /** Add the website to this course. Omitted: the website becomes its own course. */
+  /** Add the website to this course. Omitted: the student picks a course (or a new one). */
   courseId?: string;
   /** The website already added to this course, if any. */
   siteUrl?: string | null;
+  /** Without courseId: the student's courses, offered so the website joins the one it belongs to. */
+  courses?: SiteCourseOption[];
 }
 
 interface SiteStartResult {
@@ -40,9 +45,12 @@ function shortSite(url: string): string {
 // Bring in a course whose materials live on its own website (pages, slides,
 // worksheets, notes) rather than in Canvas. The crawl runs server-side and the
 // background worker reads each item, so leaving the page doesn't stop it.
-export default function CourseSiteImport({ courseId, siteUrl = null }: Props) {
+export default function CourseSiteImport({ courseId, siteUrl = null, courses = [] }: Props) {
   const router = useRouter();
   const [url, setUrl] = useState("");
+  // The student's pick wins; until then, preselect the course the address names.
+  const [picked, setPicked] = useState<string | null>(null);
+  const target = courseId ?? picked ?? suggestCourseForSite(url, courses) ?? NEW_COURSE;
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +65,7 @@ export default function CourseSiteImport({ courseId, siteUrl = null }: Props) {
       const result = await invokeFunction<SiteStartResult>("polya-import", {
         action: "site_start",
         url: address,
-        ...(courseId ? { course_id: courseId } : {}),
+        ...(target !== NEW_COURSE ? { course_id: target } : {}),
         ...(force ? { force: true } : {}),
       });
       const added = result.queued ?? 0;
@@ -92,7 +100,7 @@ export default function CourseSiteImport({ courseId, siteUrl = null }: Props) {
           Course website
         </span>
         <h2 className="text-[15.5px] tracking-[-0.015em]">
-          {siteUrl ? "Studying your course website" : courseId ? "Add your course website" : "Course not on Canvas?"}
+          {siteUrl ? "Studying your course website" : "Add your course website"}
         </h2>
       </div>
 
@@ -121,6 +129,9 @@ export default function CourseSiteImport({ courseId, siteUrl = null }: Props) {
             If your class keeps its schedule, slides, and worksheets on its own
             website, paste the address. Polya studies the pages and the files
             they link to, so its help matches what your class covers.
+            {!courseId && courses.length > 0
+              ? " If the class is already in Polya, pick it so everything stays in one place."
+              : ""}
           </p>
           <form
             className="flex flex-col gap-2 sm:flex-row"
@@ -144,6 +155,27 @@ export default function CourseSiteImport({ courseId, siteUrl = null }: Props) {
               disabled={busy}
               className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-[9px] text-[13px] shadow-card outline-none placeholder:text-ink3 focus:border-accent"
             />
+            {!courseId && courses.length > 0 ? (
+              <>
+                <label htmlFor="course-site-target" className="sr-only">
+                  Which course is this for?
+                </label>
+                <select
+                  id="course-site-target"
+                  value={target}
+                  onChange={(event) => setPicked(event.target.value)}
+                  disabled={busy}
+                  className="min-w-0 rounded-lg border border-line bg-surface px-2.5 py-[9px] text-[13px] shadow-card outline-none focus:border-accent sm:max-w-[220px]"
+                >
+                  {courses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.code ? `${course.code} · ${course.name}` : course.name}
+                    </option>
+                  ))}
+                  <option value={NEW_COURSE}>A new course</option>
+                </select>
+              </>
+            ) : null}
             <button
               type="submit"
               disabled={busy || !url.trim()}

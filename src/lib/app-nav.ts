@@ -22,7 +22,7 @@ export function isCoursePath(pathname: string, courseId: string): boolean {
 /** Short "where am I" label for the phone-width menu button. */
 export function currentPlaceLabel(pathname: string, courses: NavCourse[]): string {
   if (pathname === "/app/connect" || pathname.startsWith("/app/connect/")) {
-    return "Connect Canvas";
+    return "Add a course";
   }
   const course = courses.find((c) => isCoursePath(pathname, c.id));
   if (course) return course.code?.trim() || course.name;

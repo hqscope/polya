@@ -51,11 +51,25 @@ Next.js 16 app (this repo)                              Supabase (shared project
    `ds100.org/fa26`), `polya-import {action:site_start, url, course_id?}` crawls the site
    (`_shared/course-site.ts`): pages on the start URL's host under its path are fetched and
    followed (≤120), same-host pages outside it that they link (shared course notes) are queued but
-   not followed, and the crawl queues hosted PDFs (≤40 per page, so a past-exams table doesn't
-   swamp the course) and Google Drive / Slides / Docs links. That yields three origins:
-   `site_page` (html), `site_file` (pdf), and `drive_file` (pdf, `canvas_id` = `slides:<id>`).
+   not followed, and the crawl queues PDFs on any host (≤40 per page, so a past-exams table doesn't
+   swamp the course), Google Drive / Slides / Docs files (linked or embedded in an `<iframe>`), and
+   Jupyter notebooks ("open in DataHub" nbgitpuller links or GitHub files, read from
+   raw.githubusercontent.com with outputs dropped). That yields three origins: `site_page` (html;
+   notebooks too, with `canvas_id` = the raw URL), `site_file` (pdf), and `drive_file` (pdf,
+   `canvas_id` = `slides:<id>`). Before crawling, the start host's DNS answers must be public
+   (`site-policy.ts`), robots.txt is honored (pages and same-host files it disallows are skipped),
+   and the crawl stops starting pages after 45 s so a slow site can't time the request out.
    With `course_id` the site is added to an existing (Canvas) course; without it a website-only
-   course is created, keyed `site:<url>` in `canvas_course_id`. `polya_courses.site_url` remembers
+   course is created, keyed `site:<url>` in `canvas_course_id`. The "Add a course" page offers the
+   student's courses and preselects the one whose number is in the address
+   (`src/lib/course-site-match.ts`), so a class's website joins its Canvas course.
+   **Auto-refresh:** pg_cron `polya-site-refresh` (every 30 min, `polya_refresh_course_sites()`)
+   claims up to 4 courses whose website wasn't checked in 20 h (`polya_courses.site_checked_at`,
+   skipping courses mid-import) and calls `polya-import {action:site_refresh}` with the pump secret.
+   That re-crawls in the background in "auto" mode (`diffSiteSources`): new items are queued and
+   the site's own pages are re-read (hash-checked), while notes, notebooks and files wait for a
+   manual "Check for updates" (`force`). A check marks the course importing only when it queued
+   something. `polya_courses.site_url` remembers
    the address for "Check for updates" (`force`). Every fetch goes through `_shared/safe-fetch.ts`
    (https only, public host on every redirect hop, size cap, timeout). Google files are fetched
    from the public export first; a file shared only inside the school's Google domain is read

@@ -24,7 +24,7 @@ test("isCoursePath matches whole segments only", () => {
 
 test("the phone menu button names where you are", () => {
   assert.equal(currentPlaceLabel("/app", courses), "My courses");
-  assert.equal(currentPlaceLabel("/app/connect", courses), "Connect Canvas");
+  assert.equal(currentPlaceLabel("/app/connect", courses), "Add a course");
   assert.equal(currentPlaceLabel("/app/courses/c1", courses), "CS 61B");
   assert.equal(currentPlaceLabel("/app/courses/c1/materials", courses), "CS 61B");
   assert.equal(currentPlaceLabel("/app/courses/c10", courses), "Genetics");

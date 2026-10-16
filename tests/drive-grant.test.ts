@@ -191,6 +191,18 @@ test("fetchWebPdf and fetchSitePageText turn dead links into plain messages", as
     e instanceof WebSourceError && /didn't lead to a PDF/.test(e.message));
   await assert.rejects(fetchWebPdf({ origin: "drive_file", canvas_id: "bogus", canvas_url: null, user_id: "u" }, noReader, site), WebSourceError);
 
+  const notebook = JSON.stringify({
+    cells: [
+      { cell_type: "markdown", source: ["# Homework 1\n", "Find the mean of `x`."] },
+      { cell_type: "code", source: "x.mean()", outputs: [{ data: { "image/png": "iVBORw0KGgo" } }] },
+    ],
+  });
+  const nbFetch = async () => new Response(notebook, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  const nbText = await fetchSitePageText("https://raw.githubusercontent.com/o/r/main/hw/hw01.ipynb", nbFetch);
+  assert.match(nbText!, /Homework 1/);
+  assert.match(nbText!, /x\.mean\(\)/);
+  assert.doesNotMatch(nbText!, /iVBORw0KGgo/);
+
   const text = await fetchSitePageText("https://ds100.org/fa26/page/", site);
   assert.match(text!, /Discussion 6/);
   assert.doesNotMatch(text!, /Menu/);

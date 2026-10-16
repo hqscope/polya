@@ -41,7 +41,7 @@ export default function SidebarNav({ courses }: { courses: SidebarCourse[] }) {
           My courses
         </NavItem>
         <NavItem href="/app/connect" active={pathname.startsWith("/app/connect")}>
-          Connect Canvas
+          Add a course
         </NavItem>
       </nav>
 

@@ -538,10 +538,12 @@ async function advanceHtml(source: SourceRow, connection: Connection | null): Pr
   return await finishTextSource(source, text);
 }
 
-// Course-website page: fetch its main-content text, then the same
-// hash-checked chunk+embed as a Canvas page. Single step.
+// Course-website page (or notebook): fetch its text, then the same
+// hash-checked chunk+embed as a Canvas page. Single step. canvas_id is the
+// address it's read from; for a notebook canvas_url is its GitHub page.
 async function advanceSitePage(source: SourceRow): Promise<string> {
-  const text = source.canvas_url ? await fetchSitePageText(source.canvas_url) : null;
+  const url = source.canvas_id?.startsWith("https://") ? source.canvas_id : source.canvas_url;
+  const text = url ? await fetchSitePageText(url) : null;
   return await finishTextSource(source, text);
 }
 
