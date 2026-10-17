@@ -6,9 +6,17 @@
 //   generate_questions write practice questions for one topic, then keep only
 //                      those whose key is checked by fixed rules AND matched by
 //                      an independent solve that never saw it (two Claude calls)
-//   submit_attempt     grade an answer with fixed rules (no model), record it,
-//                      and return the key and the worked explanation
+//   submit_attempt     grade an answer with fixed rules (written parts against
+//                      their rubric, one Claude call), record it, and return
+//                      the key and the worked explanation
 //   flag_question      the student reports a bad question; it stops being served
+//   build_mock         fill a mock exam with checked questions, writing one more
+//                      checked batch per call when the bank runs short (the
+//                      browser calls this until the mock is ready)
+//   start_mock         start the clock (the server stamps start and due times)
+//   submit_mock        grade a handed-in mock (blanks count as wrong) and store
+//                      its report
+//   toggle_plan_item   tick or untick one task in the exam's study plan
 //
 // Exams, which files are the formula sheet / past exams, and topic edits are
 // plain RLS writes from the browser (polya_study migration); only work that
@@ -30,6 +38,10 @@ import {
   STUDY_HOURLY_BUCKET,
   STUDY_HOURLY_LIMIT,
   STUDY_MAX_BODY_BYTES,
+  STUDY_GRADE_DAILY_BUCKET,
+  STUDY_GRADE_DAILY_LIMIT,
+  STUDY_MOCK_WRITE_DAILY_BUCKET,
+  STUDY_MOCK_WRITE_DAILY_LIMIT,
   STUDY_TOPICS_DAILY_BUCKET,
   STUDY_TOPICS_DAILY_LIMIT,
   STUDY_WRITE_DAILY_BUCKET,
@@ -51,6 +63,8 @@ import {
   QUESTIONS_PER_CALL,
   TOPICS_SCHEMA,
   WRITER_SCHEMA,
+  WRITER_SCHEMA_FR,
+  type PublicPart,
 } from "../_shared/study-questions.ts";
 import {
   CHECKER_SYSTEM,
@@ -59,10 +73,33 @@ import {
   type Excerpt,
   TOPICS_SYSTEM,
   topicsUserText,
+  GRADER_SYSTEM,
+  type GraderItem,
+  graderUserText,
   WRITER_SYSTEM,
+  WRITER_SYSTEM_FR,
   writerUserText,
 } from "../_shared/study-prompts.ts";
-import { gradeAttempt, type PartKey } from "../_shared/study-grade.ts";
+import {
+  GRADER_SCHEMA,
+  gradeAttempt,
+  gradePart,
+  isBlankResponse,
+  parseGraderOutput,
+  type PartKey,
+  type PartResponse,
+  type PartResult,
+  type WrittenGrade,
+} from "../_shared/study-grade.ts";
+import {
+  biggestDeficit,
+  buildMockReport,
+  MOCK_MIN_QUESTIONS,
+  pickMockQuestions,
+  validateMockSpec,
+  type BankQuestion,
+} from "../_shared/study-mock.ts";
+import { asPlan } from "../_shared/coach-blocks.ts";
 
 // The tutor's model. It has a row in ai-budget.ts MODEL_PRICES, so budget
 // estimates are exact without touching that shared file.
@@ -75,6 +112,7 @@ const ANTHROPIC_KEY = (globalThis as { Deno?: { env: { get(k: string): string | 
 const TOPICS_CALL = { maxTokens: 6_000, effort: "medium" as Effort, timeoutMs: 100_000 };
 const WRITER_CALL = { maxTokens: 12_000, effort: "high" as Effort, timeoutMs: 85_000 };
 const CHECKER_CALL = { maxTokens: 6_000, effort: "medium" as Effort, timeoutMs: 50_000 };
+const GRADER_CALL = { maxTokens: 6_000, effort: "medium" as Effort, timeoutMs: 60_000 };
 const REQUEST_BUDGET_MS = 140_000;
 
 // Formula sheets travel as the PDF itself (math survives) when small enough.
@@ -95,6 +133,10 @@ interface StudyBody {
   question_id?: unknown;
   responses?: unknown;
   note?: unknown;
+  mock_id?: unknown;
+  answers?: unknown;
+  item_id?: unknown;
+  done?: unknown;
 }
 
 interface ExamRow {
@@ -175,6 +217,14 @@ Deno.serve(async (request: Request): Promise<Response> => {
         return await submitAttempt(user.id, requireId(body.question_id, "question"), body.responses);
       case "flag_question":
         return await flagQuestion(user.id, requireId(body.question_id, "question"), body.note);
+      case "build_mock":
+        return await buildMock(request, user.id, requireId(body.mock_id, "mock exam"));
+      case "start_mock":
+        return await startMock(user.id, requireId(body.mock_id, "mock exam"));
+      case "submit_mock":
+        return await submitMock(user.id, requireId(body.mock_id, "mock exam"), body.answers);
+      case "toggle_plan_item":
+        return await togglePlanItem(user.id, requireId(body.exam_id, "exam"), body.item_id, body.done);
       default:
         return json({ error: "Unknown action", code: "bad_request" }, 400);
     }
@@ -404,19 +454,29 @@ async function proposeTopics(userId: string, examId: string): Promise<Response> 
 // ---------------------------------------------------------------------------
 // generate_questions
 // ---------------------------------------------------------------------------
-async function generateQuestions(request: Request, userId: string, examId: string, topicId: string): Promise<Response> {
-  const started = Date.now();
-  const exam = await loadExam(userId, examId);
+interface TopicInput {
+  id: string;
+  title: string;
+  summary: string | null;
+  key_formulas: string[];
+}
+
+async function loadTopic(userId: string, examId: string, topicId: string): Promise<TopicInput> {
   const { data: topicRow } = await service
     .from("polya_study_topics")
     .select("id, title, summary, key_formulas")
     .eq("id", topicId)
-    .eq("exam_id", exam.id)
+    .eq("exam_id", examId)
     .eq("user_id", userId)
     .maybeSingle();
   if (!topicRow) throw new HttpError("That topic isn't available.", 404);
-  const topic = topicRow as { id: string; title: string; summary: string | null; key_formulas: string[] };
-  const context = await examContext(userId, exam);
+  return topicRow as TopicInput;
+}
+
+async function generateQuestions(request: Request, userId: string, examId: string, topicId: string): Promise<Response> {
+  const started = Date.now();
+  const exam = await loadExam(userId, examId);
+  const topic = await loadTopic(userId, exam.id, topicId);
 
   if (!(await withinDailyCap(service, userId, STUDY_WRITE_DAILY_BUCKET, STUDY_WRITE_DAILY_LIMIT))) {
     return rateLimitedResponse({
@@ -425,11 +485,42 @@ async function generateQuestions(request: Request, userId: string, examId: strin
     });
   }
 
+  const batch = await writeVerifiedBatch(request, userId, exam, topic, { allowWritten: false, started });
+  if (!batch.ok) return batch.response;
+  return json({ questions: batch.saved, written: batch.written, kept: batch.saved.length });
+}
+
+interface SavedQuestion {
+  id: string;
+  topic_id: string;
+  stem: string;
+  parts: PublicPart[];
+  sources: unknown;
+  status: string;
+  created_at: string;
+}
+
+type BatchOutcome = { ok: true; saved: SavedQuestion[]; written: number } | { ok: false; response: Response };
+
+/**
+ * One checked batch for a topic: write, check every key by fixed rules, have
+ * an independent solve that never saw the keys agree, and save what passed.
+ * The caller checks its own daily cap first.
+ */
+async function writeVerifiedBatch(
+  request: Request,
+  userId: string,
+  exam: ExamRow,
+  topic: TopicInput,
+  options: { allowWritten: boolean; started: number },
+): Promise<BatchOutcome> {
+  const context = await examContext(userId, exam);
+
   // Course evidence for the topic (the same retrieval as the tutor). Its
   // query embedding is metered on the shared Gemini budget.
   const query = [topic.title, topic.summary ?? "", ...topic.key_formulas].join(" ").slice(0, 1_500);
   if ((await claimAiBudget(service, "gemini", userId, estimateEmbeddingUnits(query.length))) !== "ok") {
-    return aiBusyResponse({ headers: corsHeaders });
+    return { ok: false, response: aiBusyResponse({ headers: corsHeaders }) };
   }
   const userClient = createUserClient(request);
   const units = await retrieve(userClient, exam.course_id, query, []);
@@ -448,6 +539,7 @@ async function generateQuestions(request: Request, userId: string, examId: strin
     .limit(10);
 
   // 1. Write.
+  const writerSystem = options.allowWritten ? WRITER_SYSTEM_FR : WRITER_SYSTEM;
   const writerText = writerUserText({
     exam: context,
     topic,
@@ -459,12 +551,16 @@ async function generateQuestions(request: Request, userId: string, examId: strin
   });
   const written = await budgetedCall(
     userId,
-    WRITER_SYSTEM.length + writerText.length + sheetInputs.docChars,
+    writerSystem.length + writerText.length + sheetInputs.docChars,
     WRITER_CALL,
-    { system: WRITER_SYSTEM, content: [...sheetInputs.documents, { type: "text", text: writerText }], schema: WRITER_SCHEMA },
+    {
+      system: writerSystem,
+      content: [...sheetInputs.documents, { type: "text", text: writerText }],
+      schema: options.allowWritten ? WRITER_SCHEMA_FR : WRITER_SCHEMA,
+    },
   );
-  if (written === "busy") return aiBusyResponse({ headers: corsHeaders });
-  if (!written.ok) return writeFailure("writer", written);
+  if (written === "busy") return { ok: false, response: aiBusyResponse({ headers: corsHeaders }) };
+  if (!written.ok) return { ok: false, response: writeFailure("writer", written) };
   const drafts = parseWriterOutput(written.value) ?? [];
 
   // 2. Fixed-rule checks on every key.
@@ -479,8 +575,8 @@ async function generateQuestions(request: Request, userId: string, examId: strin
   // 3. An independent solve that never sees the keys.
   const kept: { question: PreparedQuestion; verification: Record<string, unknown> }[] = [];
   if (prepared.length > 0) {
-    const remaining = REQUEST_BUDGET_MS - (Date.now() - started);
-    if (remaining < 15_000) return json({ error: SLOW_MESSAGE, code: "slow" }, 503);
+    const remaining = REQUEST_BUDGET_MS - (Date.now() - options.started);
+    if (remaining < 15_000) return { ok: false, response: json({ error: SLOW_MESSAGE, code: "slow" }, 503) };
     const checkerText = checkerUserText({
       evidence,
       formulaSheets: sheetInputs.excerpts,
@@ -492,8 +588,8 @@ async function generateQuestions(request: Request, userId: string, examId: strin
       { ...CHECKER_CALL, timeoutMs: Math.min(CHECKER_CALL.timeoutMs, remaining - 5_000) },
       { system: CHECKER_SYSTEM, content: [...sheetInputs.documents, { type: "text", text: checkerText }], schema: CHECKER_SCHEMA },
     );
-    if (checked === "busy") return aiBusyResponse({ headers: corsHeaders });
-    if (!checked.ok) return writeFailure("checker", checked);
+    if (checked === "busy") return { ok: false, response: aiBusyResponse({ headers: corsHeaders }) };
+    if (!checked.ok) return { ok: false, response: writeFailure("checker", checked) };
     const answers = parseCheckerOutput(checked.value) ?? [];
     prepared.forEach((question, i) => {
       const agreement = checkAgreement(question.keys, answers[i]);
@@ -507,7 +603,7 @@ async function generateQuestions(request: Request, userId: string, examId: strin
   if (dropped.length > 0) console.info(`[polya-study] dropped ${dropped.length}: ${dropped.join(" | ").slice(0, 600)}`);
 
   // 4. Save what passed.
-  const saved = [];
+  const saved: SavedQuestion[] = [];
   for (const { question, verification } of kept) {
     const { data: row, error } = await service
       .from("polya_practice_questions")
@@ -536,14 +632,15 @@ async function generateQuestions(request: Request, userId: string, examId: strin
       await service.from("polya_practice_questions").delete().eq("id", row.id);
       throw keyError;
     }
-    saved.push(row);
+    saved.push(row as SavedQuestion);
   }
 
   await trackServer(userId, "study_questions_written", exam.course_id, {
     written: drafts.length,
     kept: saved.length,
+    with_written_parts: options.allowWritten,
   });
-  return json({ questions: saved, written: drafts.length, kept: saved.length });
+  return { ok: true, saved, written: drafts.length };
 }
 
 /** Up to three past-exam excerpts on this topic, else each one's opening. */
@@ -574,6 +671,99 @@ function writeFailure(stage: string, result: Extract<ClaudeJsonResult, { ok: fal
 }
 
 // ---------------------------------------------------------------------------
+// Written parts: one rubric-grader call for every written answer in a
+// submission. Blank answers aren't sent (they score 0 without a model).
+// ---------------------------------------------------------------------------
+type WrittenWork = { item: GraderItem; question: number; part: number };
+
+function writtenWork(
+  questions: readonly { stem: string; parts: PublicPart[]; keys: PartKey[]; responses: PartResponse[] }[],
+): WrittenWork[] {
+  const work: WrittenWork[] = [];
+  questions.forEach((q, qi) => {
+    q.keys.forEach((key, pi) => {
+      const response = q.responses[pi];
+      if (key.kind !== "free_response" || !response || response.kind !== "free_response" || isBlankResponse(response)) return;
+      const part = q.parts[pi];
+      work.push({
+        question: qi,
+        part: pi,
+        item: {
+          item: work.length + 1,
+          stem: q.stem,
+          prompt: part?.prompt ?? "",
+          rubric: key.rubric,
+          modelAnswer: key.model_answer,
+          points: key.points,
+          answer: response.text,
+        },
+      });
+    });
+  });
+  return work;
+}
+
+/** Grades written work; per question, a map from part index to its grade. */
+async function gradeWritten(
+  userId: string,
+  work: readonly WrittenWork[],
+): Promise<Map<number, Map<number, WrittenGrade>> | Response> {
+  const byQuestion = new Map<number, Map<number, WrittenGrade>>();
+  if (work.length === 0) return byQuestion;
+  if (!(await withinDailyCap(service, userId, STUDY_GRADE_DAILY_BUCKET, STUDY_GRADE_DAILY_LIMIT))) {
+    return rateLimitedResponse({
+      message: "That's today's limit for checking written answers. Try again tomorrow.",
+      headers: corsHeaders,
+    });
+  }
+  const text = graderUserText(work.map((w) => w.item));
+  const result = await budgetedCall(userId, GRADER_SYSTEM.length + text.length, GRADER_CALL, {
+    system: GRADER_SYSTEM,
+    content: [{ type: "text", text }],
+    schema: GRADER_SCHEMA,
+  });
+  if (result === "busy") return aiBusyResponse({ headers: corsHeaders });
+  if (!result.ok) {
+    console.error(`[polya-study] grader failed: ${result.failure} ${result.detail}`);
+    return json({
+      error: "Polya couldn't read your written answer just now. Your answer is still here; please try again.",
+      code: result.failure === "timeout" ? "slow" : "unavailable",
+    }, 503);
+  }
+  const grades = parseGraderOutput(
+    result.value,
+    work.map((w) => ({ item: w.item.item, points: w.item.points, rubricCount: w.item.rubric.length })),
+  );
+  if (!grades) {
+    return json({ error: "Polya couldn't read your written answer just now. Please try again.", code: "unavailable" }, 503);
+  }
+  for (const w of work) {
+    const map = byQuestion.get(w.question) ?? new Map<number, WrittenGrade>();
+    map.set(w.part, grades.get(w.item.item)!);
+    byQuestion.set(w.question, map);
+  }
+  return byQuestion;
+}
+
+/** Question ids held by the student's mock exams that aren't handed in yet. */
+async function reservedQuestionIds(userId: string, exceptMockId?: string): Promise<Set<string>> {
+  const { data } = await service
+    .from("polya_mock_exams")
+    .select("id, question_ids")
+    .eq("user_id", userId)
+    .in("status", ["building", "ready", "in_progress"]);
+  const ids = new Set<string>();
+  for (const row of (data ?? []) as { id: string; question_ids: string[] }[]) {
+    if (row.id === exceptMockId) continue;
+    for (const id of row.question_ids ?? []) ids.add(id);
+  }
+  return ids;
+}
+
+const attemptTopicIds = (question: { topic_id: string; topic_ids?: string[] | null }) =>
+  question.topic_ids && question.topic_ids.length > 0 ? question.topic_ids : [question.topic_id];
+
+// ---------------------------------------------------------------------------
 // submit_attempt
 // ---------------------------------------------------------------------------
 async function submitAttempt(userId: string, questionId: string, rawResponses: unknown): Promise<Response> {
@@ -583,7 +773,7 @@ async function submitAttempt(userId: string, questionId: string, rawResponses: u
   const [{ data: question }, { data: key }] = await Promise.all([
     service
       .from("polya_practice_questions")
-      .select("id, exam_id, topic_id, course_id, parts, sources")
+      .select("id, exam_id, topic_id, topic_ids, course_id, stem, parts, sources")
       .eq("id", questionId)
       .eq("user_id", userId)
       .maybeSingle(),
@@ -595,27 +785,60 @@ async function submitAttempt(userId: string, questionId: string, rawResponses: u
       .maybeSingle(),
   ]);
   if (!question || !key) throw new HttpError("That question isn't available.", 404);
+  // A question waiting in a mock exam can't be answered (and its key read) early.
+  if ((await reservedQuestionIds(userId)).has(questionId)) {
+    throw new HttpError("This question is part of a mock exam you haven't handed in yet.", 409);
+  }
 
   const keys = key.answers as PartKey[];
-  const graded = gradeAttempt(keys, responses);
+  const parts = question.parts as PublicPart[];
+  // Check every other part first, so a typo doesn't spend a grader call.
+  if (responses.length !== keys.length) {
+    return json({ error: "Answer each part of the question once.", code: "bad_answer", part: 0 }, 400);
+  }
+  for (const [i, k] of keys.entries()) {
+    if (k.kind === "free_response") {
+      if (isBlankResponse(responses[i])) {
+        return json({ error: "Write your answer before submitting.", code: "bad_answer", part: i }, 400);
+      }
+      continue;
+    }
+    const checked = gradePart(k, responses[i]!);
+    if (!checked.ok) return json({ error: checked.message, code: "bad_answer", part: i }, 400);
+  }
+
+  const written = await gradeWritten(userId, writtenWork([{ stem: question.stem as string, parts, keys, responses }]));
+  if (written instanceof Response) return written;
+  const graded = gradeAttempt(keys, responses, { written: written.get(0) });
   if (!graded.ok) {
     return json({ error: graded.message, code: "bad_answer", part: graded.partIndex }, 400);
   }
 
-  const { error } = await service.from("polya_practice_attempts").insert({
-    user_id: userId,
-    question_id: question.id,
-    exam_id: question.exam_id,
-    topic_id: question.topic_id,
-    responses,
-    results: graded.grade.results,
-    score: graded.grade.score,
-    all_correct: graded.grade.allCorrect,
-  });
+  const { data: attempt, error } = await service
+    .from("polya_practice_attempts")
+    .insert({
+      user_id: userId,
+      question_id: question.id,
+      exam_id: question.exam_id,
+      topic_id: question.topic_id,
+      topic_ids: attemptTopicIds(question as { topic_id: string; topic_ids: string[] | null }),
+      responses,
+      results: graded.grade.results,
+      score: graded.grade.score,
+      all_correct: graded.grade.allCorrect,
+    })
+    .select("id, created_at")
+    .single();
   if (error) throw error;
 
-  await trackServer(userId, "study_attempt", question.course_id as string, { score: graded.grade.score });
+  await trackServer(userId, "study_attempt", question.course_id as string, {
+    score: graded.grade.score,
+    written_parts: written.get(0)?.size ?? 0,
+  });
   return json({
+    attempt_id: (attempt as { id: string } | null)?.id ?? null,
+    created_at: (attempt as { created_at: string } | null)?.created_at ?? new Date().toISOString(),
+    topic_ids: attemptTopicIds(question as { topic_id: string; topic_ids: string[] | null }),
     results: graded.grade.results,
     score: graded.grade.score,
     all_correct: graded.grade.allCorrect,
@@ -645,4 +868,313 @@ async function flagQuestion(userId: string, questionId: string, rawNote: unknown
     .eq("user_id", userId);
   await trackServer(userId, "study_question_reported", data.course_id as string, {});
   return json({ ok: true });
+}
+
+// ---------------------------------------------------------------------------
+// Mock exams
+// ---------------------------------------------------------------------------
+interface MockRow {
+  id: string;
+  exam_id: string;
+  course_id: string;
+  title: string;
+  minutes: number;
+  spec: unknown;
+  question_ids: string[];
+  status: "building" | "ready" | "in_progress" | "submitted";
+  started_at: string | null;
+  due_at: string | null;
+  submitted_at: string | null;
+  score: number | null;
+  report: unknown;
+}
+
+const MOCK_COLUMNS = "id, exam_id, course_id, title, minutes, spec, question_ids, status, started_at, due_at, submitted_at, score, report";
+
+async function loadMock(userId: string, mockId: string): Promise<MockRow> {
+  const { data } = await service
+    .from("polya_mock_exams")
+    .select(MOCK_COLUMNS)
+    .eq("id", mockId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!data) throw new HttpError("That mock exam isn't available.", 404);
+  return data as MockRow;
+}
+
+function mockState(mock: MockRow, total: number) {
+  return { status: mock.status, built: mock.question_ids.length, total };
+}
+
+async function buildMock(request: Request, userId: string, mockId: string): Promise<Response> {
+  const started = Date.now();
+  const mock = await loadMock(userId, mockId);
+  const total = Number((mock.spec as { question_count?: unknown })?.question_count) || mock.question_ids.length;
+  if (mock.status !== "building") return json(mockState(mock, total));
+
+  const exam = await loadExam(userId, mock.exam_id);
+  const [{ data: topicRows }, { data: bankRows }, { data: attemptRows }, reserved] = await Promise.all([
+    service.from("polya_study_topics").select("id, title, summary, key_formulas").eq("exam_id", exam.id).eq("user_id", userId),
+    service
+      .from("polya_practice_questions")
+      .select("id, topic_id, status, origin, created_at")
+      .eq("exam_id", exam.id)
+      .eq("user_id", userId)
+      .limit(1_000),
+    service.from("polya_practice_attempts").select("question_id").eq("exam_id", exam.id).eq("user_id", userId).limit(5_000),
+    reservedQuestionIds(userId, mock.id),
+  ]);
+  const topics = (topicRows ?? []) as TopicInput[];
+  const spec = validateMockSpec(mock.spec, topics.map((t) => t.id));
+  if (!spec.ok) throw new HttpError("This exam's topics changed since the mock was set up. Ask Polya for a new one.", 409);
+  const bank = (bankRows ?? []) as BankQuestion[];
+  const attempted = new Set(((attemptRows ?? []) as { question_id: string }[]).map((a) => a.question_id));
+
+  let picked = pickMockQuestions({ spec: spec.spec, have: mock.question_ids, bank, attemptedIds: attempted, reservedIds: reserved });
+  let have = [...mock.question_ids, ...picked.chosen];
+  let writtenNote: string | null = null;
+
+  const target = biggestDeficit(picked.deficits, spec.spec);
+  if (target) {
+    if (await withinDailyCap(service, userId, STUDY_MOCK_WRITE_DAILY_BUCKET, STUDY_MOCK_WRITE_DAILY_LIMIT)) {
+      const topic = topics.find((t) => t.id === target)!;
+      const batch = await writeVerifiedBatch(request, userId, exam, topic, { allowWritten: spec.spec.free_response, started });
+      if (!batch.ok) {
+        // Keep what was picked so far; the browser can try the next step again.
+        await service.from("polya_mock_exams").update({ question_ids: have }).eq("id", mock.id).eq("status", "building");
+        return batch.response;
+      }
+      if (batch.saved.length === 0) writtenNote = "kept_none";
+      picked = pickMockQuestions({
+        spec: spec.spec,
+        have,
+        bank: [...bank, ...batch.saved.map((q) => ({ ...q, origin: "bank" }))],
+        attemptedIds: attempted,
+        reservedIds: reserved,
+      });
+      have = [...have, ...picked.chosen];
+    } else {
+      writtenNote = "daily_cap";
+    }
+  }
+
+  // Ready when full, or when nothing more can be written today and there's
+  // enough for a real (shorter) mock.
+  const full = have.length >= spec.spec.question_count;
+  const stuck = writtenNote === "daily_cap" && have.length >= MOCK_MIN_QUESTIONS;
+  const status = full || stuck ? "ready" : "building";
+  if (writtenNote === "daily_cap" && !stuck) {
+    await service.from("polya_mock_exams").update({ question_ids: have }).eq("id", mock.id).eq("status", "building");
+    return rateLimitedResponse({
+      message: "Polya has written as many new questions as it can today. Try again tomorrow to finish this mock exam.",
+      headers: corsHeaders,
+    });
+  }
+  const { error } = await service
+    .from("polya_mock_exams")
+    .update({ question_ids: have.slice(0, spec.spec.question_count), status })
+    .eq("id", mock.id)
+    .eq("status", "building");
+  if (error) throw error;
+  return json({ status, built: Math.min(have.length, spec.spec.question_count), total: spec.spec.question_count, short: stuck && !full });
+}
+
+async function mockQuestions(userId: string, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  const { data } = await service
+    .from("polya_practice_questions")
+    .select("id, topic_id, topic_ids, stem, parts, sources")
+    .in("id", ids as string[])
+    .eq("user_id", userId);
+  const byId = new Map(((data ?? []) as { id: string }[]).map((q) => [q.id, q]));
+  return ids.map((id) => byId.get(id)).filter(Boolean) as {
+    id: string;
+    topic_id: string;
+    topic_ids: string[] | null;
+    stem: string;
+    parts: PublicPart[];
+    sources: unknown;
+  }[];
+}
+
+async function startMock(userId: string, mockId: string): Promise<Response> {
+  let mock = await loadMock(userId, mockId);
+  if (mock.status === "building") throw new HttpError("This mock exam isn't ready yet.", 409);
+  if (mock.status === "submitted") throw new HttpError("This mock exam was already handed in.", 409);
+  if (mock.status === "ready") {
+    const now = Date.now();
+    const { data, error } = await service
+      .from("polya_mock_exams")
+      .update({
+        status: "in_progress",
+        started_at: new Date(now).toISOString(),
+        due_at: new Date(now + mock.minutes * 60_000).toISOString(),
+      })
+      .eq("id", mock.id)
+      .eq("user_id", userId)
+      .eq("status", "ready")
+      .select(MOCK_COLUMNS)
+      .maybeSingle();
+    if (error) throw error;
+    // Another tab may have started it a moment ago: use whatever is stored.
+    mock = (data as MockRow | null) ?? (await loadMock(userId, mockId));
+  }
+  const questions = await mockQuestions(userId, mock.question_ids);
+  return json({
+    mock: { id: mock.id, title: mock.title, minutes: mock.minutes, status: mock.status, started_at: mock.started_at, due_at: mock.due_at },
+    // The student sees topics only after handing in.
+    questions: questions.map((q) => ({ id: q.id, stem: q.stem, parts: q.parts })),
+    server_now: new Date().toISOString(),
+  });
+}
+
+function blankResponses(parts: readonly PublicPart[]): PartResponse[] {
+  return parts.map((part): PartResponse => {
+    switch (part.kind) {
+      case "numeric":
+        return { kind: "numeric", answer: "" };
+      case "mc":
+        return { kind: "mc", choice: -1 };
+      case "select_all":
+        return { kind: "select_all", choices: [] };
+      case "free_response":
+        return { kind: "free_response", text: "" };
+    }
+  });
+}
+
+function readMockAnswers(raw: unknown): Map<string, unknown> {
+  const answers = new Map<string, unknown>();
+  if (!Array.isArray(raw)) return answers;
+  for (const entry of raw.slice(0, 12)) {
+    if (entry && typeof entry === "object" && typeof (entry as { question_id?: unknown }).question_id === "string") {
+      answers.set((entry as { question_id: string }).question_id, (entry as { responses?: unknown }).responses);
+    }
+  }
+  return answers;
+}
+
+async function submitMock(userId: string, mockId: string, rawAnswers: unknown): Promise<Response> {
+  const mock = await loadMock(userId, mockId);
+  const questions = await mockQuestions(userId, mock.question_ids);
+  const review = async (report: unknown) => {
+    const { data: attempts } = await service
+      .from("polya_practice_attempts")
+      .select("id, question_id, responses, results, score, all_correct")
+      .eq("mock_id", mock.id)
+      .eq("user_id", userId);
+    const { data: keys } = await service
+      .from("polya_practice_keys")
+      .select("question_id, answers, explanation")
+      .in("question_id", mock.question_ids)
+      .eq("user_id", userId);
+    const keyBy = new Map(((keys ?? []) as { question_id: string }[]).map((k) => [k.question_id, k]));
+    const attemptBy = new Map(((attempts ?? []) as { question_id: string }[]).map((a) => [a.question_id, a]));
+    return json({
+      report,
+      questions: questions.map((q) => ({ ...q, attempt: attemptBy.get(q.id) ?? null, key: keyBy.get(q.id) ?? null })),
+    });
+  };
+  if (mock.status === "submitted") return await review(mock.report);
+  if (mock.status !== "in_progress" || !mock.started_at || !mock.due_at) {
+    throw new HttpError("This mock exam hasn't been started.", 409);
+  }
+
+  // The hand-in time is fixed by the first submit; a retry keeps it.
+  const submittedAt = mock.submitted_at ?? new Date().toISOString();
+  if (!mock.submitted_at) {
+    await service.from("polya_mock_exams").update({ submitted_at: submittedAt }).eq("id", mock.id).is("submitted_at", null);
+  }
+
+  const { data: existing } = await service
+    .from("polya_practice_attempts")
+    .select("question_id, topic_id, topic_ids, score, all_correct")
+    .eq("mock_id", mock.id)
+    .eq("user_id", userId);
+  let rows = (existing ?? []) as { question_id: string; topic_id: string; topic_ids: string[] | null; score: number; all_correct: boolean }[];
+
+  if (rows.length === 0) {
+    const answers = readMockAnswers(rawAnswers);
+    const { data: keyRows } = await service
+      .from("polya_practice_keys")
+      .select("question_id, answers")
+      .in("question_id", mock.question_ids)
+      .eq("user_id", userId);
+    const keyBy = new Map(((keyRows ?? []) as { question_id: string; answers: PartKey[] }[]).map((k) => [k.question_id, k.answers]));
+    const graded = questions.map((q) => {
+      const parsed = parseResponses(answers.get(q.id));
+      const responses = parsed && parsed.length === q.parts.length && parsed.every((r, i) => r.kind === q.parts[i]!.kind)
+        ? parsed
+        : blankResponses(q.parts);
+      return { question: q, keys: keyBy.get(q.id) ?? [], responses };
+    });
+    const written = await gradeWritten(
+      userId,
+      writtenWork(graded.map((g) => ({ stem: g.question.stem, parts: g.question.parts, keys: g.keys, responses: g.responses }))),
+    );
+    if (written instanceof Response) return written;
+
+    const inserts = [];
+    for (const [i, g] of graded.entries()) {
+      const result = gradeAttempt(g.keys, g.responses, { written: written.get(i), blankIsWrong: true });
+      const results: PartResult[] = result.ok ? result.grade.results : g.keys.map(() => ({ ok: true, correct: false }));
+      const score = result.ok ? result.grade.score : 0;
+      inserts.push({
+        user_id: userId,
+        question_id: g.question.id,
+        exam_id: mock.exam_id,
+        topic_id: g.question.topic_id,
+        topic_ids: attemptTopicIds(g.question),
+        mock_id: mock.id,
+        responses: g.responses,
+        results,
+        score,
+        all_correct: result.ok && result.grade.allCorrect,
+      });
+    }
+    const { error } = await service.from("polya_practice_attempts").insert(inserts);
+    if (error) throw error;
+    rows = inserts.map((r) => ({
+      question_id: r.question_id,
+      topic_id: r.topic_id,
+      topic_ids: r.topic_ids,
+      score: r.score,
+      all_correct: r.all_correct,
+    }));
+  }
+
+  const { data: topicRows } = await service.from("polya_study_topics").select("id, title").eq("exam_id", mock.exam_id).eq("user_id", userId);
+  const report = buildMockReport({
+    results: rows,
+    topics: (topicRows ?? []) as { id: string; title: string }[],
+    startedAt: mock.started_at,
+    dueAt: mock.due_at,
+    submittedAt,
+  });
+  const { error } = await service
+    .from("polya_mock_exams")
+    .update({ status: "submitted", score: report.score, report })
+    .eq("id", mock.id)
+    .eq("user_id", userId);
+  if (error) throw error;
+  await trackServer(userId, "study_mock_submitted", mock.course_id, { score: report.score, questions: report.possible });
+  return await review(report);
+}
+
+// ---------------------------------------------------------------------------
+// toggle_plan_item
+// ---------------------------------------------------------------------------
+async function togglePlanItem(userId: string, examId: string, itemId: unknown, done: unknown): Promise<Response> {
+  if (typeof itemId !== "string" || !itemId || itemId.length > 64 || typeof done !== "boolean") {
+    throw new HttpError("Missing or invalid plan item.", 400);
+  }
+  const { data } = await service.from("polya_exams").select("id, plan").eq("id", examId).eq("user_id", userId).maybeSingle();
+  if (!data) throw new HttpError("That exam isn't available.", 404);
+  const plan = asPlan((data as { plan: unknown }).plan);
+  const item = plan?.days.flatMap((d) => d.items).find((i) => i.id === itemId);
+  if (!plan || !item) throw new HttpError("That plan item isn't there any more.", 404);
+  item.done = done;
+  const { error } = await service.from("polya_exams").update({ plan }).eq("id", examId).eq("user_id", userId);
+  if (error) throw error;
+  return json({ plan });
 }

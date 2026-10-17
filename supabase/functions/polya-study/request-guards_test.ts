@@ -46,6 +46,9 @@ interface Options {
   claude?: Response[];
   question?: unknown[];
   key?: unknown[];
+  mocks?: unknown[];
+  plan?: unknown;
+  attempts?: unknown[];
 }
 
 type Call = { what: string; body?: unknown };
@@ -73,7 +76,14 @@ function backend(options: Options = {}): Call[] {
     calls.push({ what: `${request.method} ${table}`, body });
     switch (`${request.method} ${table}`) {
       case "GET polya_exams":
-        return jsonResponse(options.exams ?? [EXAM]);
+        return jsonResponse(options.plan !== undefined ? [{ id: EXAM_ID, plan: options.plan }] : options.exams ?? [EXAM]);
+      case "GET polya_mock_exams":
+        return jsonResponse(options.mocks ?? []);
+      case "GET polya_practice_attempts":
+        return jsonResponse(options.attempts ?? []);
+      case "PATCH polya_mock_exams":
+      case "PATCH polya_exams":
+        return jsonResponse(null, 200);
       case "GET polya_study_topics":
         return jsonResponse([TOPIC]);
       case "GET polya_courses":
@@ -86,8 +96,9 @@ function backend(options: Options = {}): Call[] {
         return jsonResponse(options.key ?? []);
       case "POST polya_practice_questions":
         return jsonResponse({ id: QUESTION_ID, ...(body as object), status: "active", created_at: "2026-12-01T00:00:00Z" }, 201);
-      case "POST polya_practice_keys":
       case "POST polya_practice_attempts":
+        return jsonResponse({ id: "00000000-0000-4000-8000-0000000000d1", created_at: "2026-12-01T00:00:00Z" }, 201);
+      case "POST polya_practice_keys":
       case "POST polya_events":
         return jsonResponse(null, 201);
       default:
@@ -259,4 +270,134 @@ Deno.test("a question that isn't yours can't be answered", async () => {
   );
   assertEquals(response.status, 404);
   await response.body?.cancel();
+});
+
+// --- exam coach additions ------------------------------------------------------
+
+const WRITTEN_QUESTION = [{
+  id: QUESTION_ID,
+  exam_id: EXAM_ID,
+  topic_id: TOPIC_ID,
+  topic_ids: [],
+  course_id: COURSE_ID,
+  stem: "Ten coins are tossed.",
+  parts: [{ kind: "numeric", prompt: "P(10 heads)?" }, { kind: "free_response", prompt: "Why binomial?", points: 4 }],
+  sources: [],
+}];
+const WRITTEN_KEY = [{
+  answers: [
+    { kind: "numeric", expr: "0.5^10", value: 0.5 ** 10 },
+    { kind: "free_response", rubric: ["fixed n", "independent", "same p"], model_answer: "Bin(10, 1/2).", points: 4 },
+  ],
+  explanation: "Each toss is independent.",
+}];
+
+Deno.test("a written part is graded against its rubric in one call, and the attempt id comes back", async () => {
+  const calls = backend({
+    question: WRITTEN_QUESTION,
+    key: WRITTEN_KEY,
+    claude: [claudeReply({ grades: [{ item: 1, met: [1, 2], awarded: 3, feedback: "Say why p is the same.", misconception: "" }] })],
+  });
+  const response = await handler(post({
+    action: "submit_attempt",
+    question_id: QUESTION_ID,
+    responses: [{ kind: "numeric", answer: "1/1024" }, { kind: "free_response", text: "Fixed number of independent tosses." }],
+  }));
+  assertEquals(response.status, 200);
+  const result = await response.json();
+  assertEquals(result.attempt_id, "00000000-0000-4000-8000-0000000000d1");
+  assertEquals(result.results[1].awarded, 3);
+  assertEquals(result.results[1].points, 4);
+  assertEquals(result.score, (1 + 0.75) / 2);
+  assertEquals(names(calls).filter((n) => n === "claude").length, 1);
+  const grader = calls.find((c) => c.what === "claude")!.body as { messages: { content: { text: string }[] }[] };
+  assert(grader.messages[0]!.content[0]!.text.includes("<student_answer>"));
+});
+
+Deno.test("a typo in another part is a 400 before any grader call; a blank written part too", async () => {
+  let calls = backend({ question: WRITTEN_QUESTION, key: WRITTEN_KEY });
+  let response = await handler(post({
+    action: "submit_attempt",
+    question_id: QUESTION_ID,
+    responses: [{ kind: "numeric", answer: "2pi" }, { kind: "free_response", text: "Because." }],
+  }));
+  assertEquals(response.status, 400);
+  await response.body?.cancel();
+  assert(!names(calls).includes("claude"));
+
+  calls = backend({ question: WRITTEN_QUESTION, key: WRITTEN_KEY });
+  response = await handler(post({
+    action: "submit_attempt",
+    question_id: QUESTION_ID,
+    responses: [{ kind: "numeric", answer: "1/1024" }, { kind: "free_response", text: "   " }],
+  }));
+  assertEquals(response.status, 400);
+  assertEquals((await response.json()).part, 1);
+  assert(!names(calls).includes("claude"));
+});
+
+Deno.test("a question waiting in a mock exam can't be answered early", async () => {
+  const calls = backend({
+    question: QUESTION_ROW,
+    key: KEY_ROW,
+    mocks: [{ id: "00000000-0000-4000-8000-0000000000c8", question_ids: [QUESTION_ID] }],
+  });
+  const response = await handler(
+    post({ action: "submit_attempt", question_id: QUESTION_ID, responses: [{ kind: "numeric", answer: "1" }] }),
+  );
+  assertEquals(response.status, 409);
+  await response.body?.cancel();
+  assert(!names(calls).includes("POST polya_practice_attempts"));
+});
+
+const MOCK_ID = "00000000-0000-4000-8000-0000000000c9";
+
+Deno.test("a handed-in mock: blanks count as wrong, no grader for blank writing, report stored", async () => {
+  const mock = {
+    id: MOCK_ID,
+    exam_id: EXAM_ID,
+    course_id: COURSE_ID,
+    title: "Mock midterm",
+    minutes: 50,
+    spec: { question_count: 3, topic_weights: { [TOPIC_ID]: 1 }, free_response: true },
+    question_ids: [QUESTION_ID],
+    status: "in_progress",
+    started_at: "2026-12-01T10:00:00Z",
+    due_at: "2026-12-01T10:50:00Z",
+    submitted_at: null,
+    score: null,
+    report: null,
+  };
+  const calls = backend({
+    mocks: [mock],
+    question: WRITTEN_QUESTION,
+    key: [{ question_id: QUESTION_ID, ...WRITTEN_KEY[0] }],
+  });
+  const response = await handler(post({
+    action: "submit_mock",
+    mock_id: MOCK_ID,
+    answers: [{ question_id: QUESTION_ID, responses: [{ kind: "numeric", answer: "" }, { kind: "free_response", text: "" }] }],
+  }));
+  assertEquals(response.status, 200);
+  const result = await response.json();
+  assertEquals(result.report.score, 0);
+  assertEquals(result.report.missed, [QUESTION_ID]);
+  assert(!names(calls).includes("claude"));
+  const attempts = calls.find((c) => c.what === "POST polya_practice_attempts")!.body as { mock_id: string; score: number }[];
+  assertEquals(attempts[0]!.mock_id, MOCK_ID);
+  assertEquals(attempts[0]!.score, 0);
+  const update = calls.filter((c) => c.what === "PATCH polya_mock_exams").map((c) => c.body as Record<string, unknown>);
+  assert(update.some((u) => u.status === "submitted" && (u.report as { possible: number }).possible === 1));
+});
+
+Deno.test("ticking a plan item updates only that item", async () => {
+  const plan = {
+    days: [{ date: "2026-12-02", focus: "x", items: [{ id: "i1", topic_id: null, text: "a", done: false }, { id: "i2", topic_id: null, text: "b", done: false }] }],
+    note: "",
+  };
+  const calls = backend({ plan });
+  const response = await handler(post({ action: "toggle_plan_item", exam_id: EXAM_ID, item_id: "i2", done: true }));
+  assertEquals(response.status, 200);
+  const saved = calls.find((c) => c.what === "PATCH polya_exams")!.body as { plan: typeof plan };
+  assertEquals(saved.plan.days[0]!.items.map((i) => i.done), [false, true]);
 });

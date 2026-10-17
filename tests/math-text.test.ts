@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { hasMath, splitMath } from "../src/lib/math-text.ts";
+import { hasMath, mathRanges, openMathStart, splitMath } from "../src/lib/math-text.ts";
 
 const shape = (text: string) =>
   splitMath(text).map((s) => (s.kind === "math" ? `${s.display ? "D" : "I"}:${s.tex}` : s.text));
@@ -38,4 +38,27 @@ test("plain prose passes through as one run", () => {
   assert.deepEqual(splitMath("No math here."), [{ kind: "text", text: "No math here." }]);
   assert.deepEqual(splitMath(""), []);
   assert.equal(hasMath("\\(p\\)"), true);
+});
+
+test("mathRanges reports offsets that include the delimiters", () => {
+  const text = "a \\(x\\) b $$y$$";
+  const ranges = mathRanges(text);
+  assert.deepEqual(ranges, [
+    { start: 2, end: 7, tex: "x", display: false },
+    { start: 10, end: 15, tex: "y", display: true },
+  ]);
+  for (const range of ranges) {
+    const raw = text.slice(range.start, range.end);
+    assert.ok(raw.startsWith("\\(") || raw.startsWith("$$"));
+  }
+  assert.deepEqual(mathRanges("odd \\(\\) case"), []);
+});
+
+test("openMathStart finds a display opener still waiting for its closer", () => {
+  assert.equal(openMathStart("done \\[x\\] then \\[y = "), 16);
+  assert.equal(openMathStart("cost $$12"), 5);
+  // Inline openers and complete runs don't count.
+  assert.equal(openMathStart("start \\(x + "), -1);
+  assert.equal(openMathStart("\\[x\\]"), -1);
+  assert.equal(openMathStart("win $5"), -1);
 });

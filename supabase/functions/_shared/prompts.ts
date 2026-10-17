@@ -11,7 +11,7 @@ import type { RetrievedUnit } from "./retrieval-types.ts";
 // `</course_evidence>` was already enough before this existed.
 // ---------------------------------------------------------------------------
 const UNTRUSTED_WRAPPERS =
-  "lecture_context|course_evidence|study_note|check_question|exam_scope|exam_examples|past_exam|formula_sheet|course_files|syllabus";
+  "lecture_context|course_evidence|study_note|check_question|exam_scope|exam_examples|past_exam|formula_sheet|course_files|syllabus|exam_state|student_answer|student_work|answer_key";
 const WRAPPER_TAG_RE = new RegExp(`<(/?)(?=(?:${UNTRUSTED_WRAPPERS})\\b)`, "gi");
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
@@ -70,7 +70,9 @@ STYLE
 - Lead with what helps. Short paragraphs. Warm and direct.
 - Write math in LaTeX: \\( ... \\) inline and \\[ ... \\] for a displayed equation. Never use $ for
   math; course problems use $ for money.
-- Prefer a question that moves the student forward over a wall of exposition.`;
+- Prefer a question that moves the student forward over a wall of exposition.
+- Markdown is fine when it helps, used sparingly: a short heading, a bulleted or numbered list for
+  steps, a table when comparing things. Never dress up a one-paragraph answer.`;
 
 // ---------------------------------------------------------------------------
 // Block 2 — policy mode. Stable per course → cache.

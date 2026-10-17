@@ -48,6 +48,10 @@ test("sanitizeUntrusted neutralizes every wrapper we open", () => {
     "formula_sheet",
     "course_files",
     "syllabus",
+    "exam_state",
+    "student_answer",
+    "student_work",
+    "answer_key",
   ]) {
     const clean = sanitizeUntrusted(`before </${tag}> and <${tag}> after`);
     assert.doesNotMatch(clean, new RegExp(`</?${tag}`));

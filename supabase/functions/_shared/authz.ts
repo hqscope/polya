@@ -24,10 +24,11 @@ export async function assertConversationOwned(
 ): Promise<void> {
   const { data } = await service
     .from("polya_conversations")
-    .select("user_id, course_id")
+    .select("user_id, course_id, exam_id")
     .eq("id", conversationId)
     .maybeSingle();
-  if (!data || data.user_id !== userId) {
+  // An exam coach thread lives on its exam page (polya-coach), not in chat.
+  if (!data || data.user_id !== userId || data.exam_id) {
     throw new HttpError("That conversation isn't available.", 404);
   }
   if (data.course_id !== courseId) {

@@ -1,50 +1,56 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useId, useState } from "react";
 
-import MathText, { MathSpan } from "@/components/MathText";
+import MathText from "@/components/MathText";
 import MessageBubble from "@/components/chat/MessageBubble";
+import PartField from "@/components/study/PartField";
+import { AI_BUSY_POLYA_STUDY } from "@/lib/ai-busy";
 import { FunctionError, invokeFunction } from "@/lib/functions";
 import { userMessage } from "@/lib/user-message";
-import { formatValue, type GradedAttempt, type PartResponse, type QuestionRow } from "@/lib/study";
-import { evalExpression, expressionToLatex } from "../../../supabase/functions/_shared/study-expr.ts";
-import type { PartKey, PartResult } from "../../../supabase/functions/_shared/study-grade.ts";
-
-const LETTERS = ["A", "B", "C", "D", "E", "F"];
-
-type Draft = { numeric: string; mc: number | null; select: number[] };
+import {
+  draftsFromResponses,
+  partsReady,
+  responsesFromDrafts,
+  scoreLabel,
+  type Draft,
+  type GradedAttempt,
+  type PartResponse,
+  type QuestionRow,
+} from "@/lib/study";
 
 interface Props {
   courseId: string;
-  question: QuestionRow;
+  question: Pick<QuestionRow, "id" | "stem" | "parts">;
   /** Set once graded; the card then shows results instead of inputs. */
   graded: GradedAttempt | null;
   onGraded: (graded: GradedAttempt, responses: PartResponse[]) => void;
   onCite: (n: number) => void;
   onReported: () => void;
+  /** What was submitted, for a card shown again after a reload. */
+  initialResponses?: PartResponse[] | null;
+  /** Show the "Talk it through with Polya" link (off inside the exam coach, which already talks it through). */
+  talkThrough?: boolean;
+  /** Fold the worked solution away until it's opened. */
+  explanationCollapsed?: boolean;
 }
 
-function NumericPreview({ text }: { text: string }) {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const result = evalExpression(trimmed);
-  if (!result.ok) return <span className="text-[11.5px] text-ink3">{result.error}</span>;
-  // A plain number needs no echo; an expression shows what it works out to.
-  if (/^-?\d*\.?\d+(e-?\d+)?$/i.test(trimmed)) return null;
-  return <span className="font-mono text-[11.5px] text-ink3">= {formatValue(result.value)}</span>;
-}
-
-function keyLatex(key: Extract<PartKey, { kind: "numeric" }>): string | null {
-  const latex = expressionToLatex(key.expr);
-  return latex.ok ? latex.latex : null;
-}
-
-export default function QuestionCard({ courseId, question, graded, onGraded, onCite, onReported }: Props) {
-  const [drafts, setDrafts] = useState<Draft[]>(() => question.parts.map(() => ({ numeric: "", mc: null, select: [] })));
+export default function QuestionCard({
+  courseId,
+  question,
+  graded,
+  onGraded,
+  onCite,
+  onReported,
+  initialResponses,
+  talkThrough = true,
+  explanationCollapsed = false,
+}: Props) {
+  const name = useId();
+  const [drafts, setDrafts] = useState<Draft[]>(() => draftsFromResponses(question.parts, initialResponses));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [submitted, setSubmitted] = useState<PartResponse[] | null>(null);
   const [reporting, setReporting] = useState(false);
   const [reportNote, setReportNote] = useState("");
   const [reported, setReported] = useState(false);
@@ -52,30 +58,29 @@ export default function QuestionCard({ courseId, question, graded, onGraded, onC
   const update = (i: number, patch: Partial<Draft>) =>
     setDrafts((current) => current.map((draft, j) => (j === i ? { ...draft, ...patch } : draft)));
 
-  const responses: PartResponse[] = question.parts.map((part, i) => {
-    const draft = drafts[i]!;
-    if (part.kind === "numeric") return { kind: "numeric", answer: draft.numeric };
-    if (part.kind === "mc") return { kind: "mc", choice: draft.mc ?? -1 };
-    return { kind: "select_all", choices: [...draft.select].sort((a, b) => a - b) };
-  });
-  const ready = question.parts.every((part, i) =>
-    part.kind === "numeric" ? drafts[i]!.numeric.trim() !== "" : part.kind === "mc" ? drafts[i]!.mc !== null : true,
-  );
+  const ready = partsReady(question.parts, drafts);
+  const hasWritten = question.parts.some((part) => part.kind === "free_response");
 
   async function submit() {
     setSubmitting(true);
     setError(null);
+    const responses = responsesFromDrafts(question.parts, drafts);
     try {
       const result = await invokeFunction<GradedAttempt>("polya-study", {
         action: "submit_attempt",
         question_id: question.id,
         responses,
       });
-      setSubmitted(responses);
       onGraded(result, responses);
     } catch (err) {
       // An unreadable answer ("bad_answer") records nothing; its message says why.
-      setError(err instanceof FunctionError && err.code === "bad_answer" ? err.message : userMessage(err));
+      setError(
+        err instanceof FunctionError && err.code === "bad_answer"
+          ? err.message
+          : err instanceof FunctionError && err.code === "busy"
+          ? AI_BUSY_POLYA_STUDY
+          : userMessage(err),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -92,8 +97,13 @@ export default function QuestionCard({ courseId, question, graded, onGraded, onC
     }
   }
 
-  const result = (i: number): PartResult | null => graded?.results[i] ?? null;
-  const key = (i: number): PartKey | null => graded?.answers[i] ?? null;
+  const explanation = graded ? (
+    <MessageBubble
+      message={{ role: "assistant", content: graded.explanation, sources: graded.sources }}
+      messageIndex={0}
+      onCiteClick={(_, n) => onCite(n)}
+    />
+  ) : null;
 
   return (
     <article className="flex flex-col gap-5">
@@ -101,111 +111,20 @@ export default function QuestionCard({ courseId, question, graded, onGraded, onC
         <MathText text={question.stem} />
       </div>
 
-      {question.parts.map((part, i) => {
-        const partResult = result(i);
-        const partKey = key(i);
-        const right = partResult?.ok ? partResult.correct : null;
-        const name = `q-${question.id}-p${i}`;
-        return (
-          <section key={i} className="flex flex-col gap-2.5 rounded-[10px] border border-line bg-surface px-4 py-3.5 shadow-card">
-            <div className="flex items-start gap-2.5">
-              {question.parts.length > 1 ? (
-                <span className="mt-[3px] shrink-0 font-mono text-[11px] text-ink3">({String.fromCharCode(97 + i)})</span>
-              ) : null}
-              <div className="min-w-0 flex-1 text-[13.5px] leading-[1.7] whitespace-pre-line">
-                <MathText text={part.prompt} />
-              </div>
-              {right !== null ? (
-                <span
-                  className={`shrink-0 rounded px-2 py-[3px] text-[10px] font-[650] uppercase tracking-[0.07em] ${
-                    right ? "bg-accent-soft text-accent-ink" : "bg-amber-soft text-amber"
-                  }`}
-                >
-                  {right ? "Right" : "Not quite"}
-                </span>
-              ) : null}
-            </div>
-
-            {part.kind === "numeric" ? (
-              <div className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <input
-                    value={graded ? ((submitted?.[i] as { answer?: string } | undefined)?.answer ?? "") : drafts[i]!.numeric}
-                    onChange={(e) => update(i, { numeric: e.target.value })}
-                    disabled={graded !== null || submitting}
-                    inputMode="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-label={`Answer${question.parts.length > 1 ? ` to part ${String.fromCharCode(97 + i)}` : ""}`}
-                    placeholder="A number or an expression, like C(10,3)*0.5^10"
-                    className="w-full max-w-[340px] rounded-lg border border-line bg-surface px-3 py-[7px] font-mono text-[13px] outline-none placeholder:font-sans placeholder:text-ink3 focus:border-accent disabled:bg-rail"
-                  />
-                  {graded ? null : <NumericPreview text={drafts[i]!.numeric} />}
-                </div>
-                {partKey?.kind === "numeric" ? (
-                  <p className="m-0 text-[12.5px] text-ink2">
-                    Answer:{" "}
-                    {keyLatex(partKey) ? <MathSpan tex={keyLatex(partKey)!} /> : null}{" "}
-                    <span className="font-mono text-ink3">≈ {formatValue(partKey.value)}</span>
-                  </p>
-                ) : null}
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1.5" role={part.kind === "mc" ? "radiogroup" : "group"}>
-                {part.options.map((option, j) => {
-                  const chosen =
-                    part.kind === "mc" ? drafts[i]!.mc === j : drafts[i]!.select.includes(j);
-                  const isKey =
-                    partKey?.kind === "mc" ? partKey.correct === j : partKey?.kind === "select_all" ? partKey.correct.includes(j) : false;
-                  const tone = !graded
-                    ? chosen
-                      ? "border-accent bg-accent-soft"
-                      : "border-line-soft hover:border-ink3"
-                    : isKey
-                    ? "border-accent bg-accent-soft"
-                    : chosen
-                    ? "border-amber bg-amber-soft"
-                    : "border-line-soft opacity-70";
-                  return (
-                    <label
-                      key={j}
-                      className={`flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2 text-[13px] leading-[1.6] ${tone} ${
-                        graded ? "cursor-default" : ""
-                      }`}
-                    >
-                      <input
-                        type={part.kind === "mc" ? "radio" : "checkbox"}
-                        name={name}
-                        checked={chosen}
-                        disabled={graded !== null || submitting}
-                        onChange={() =>
-                          part.kind === "mc"
-                            ? update(i, { mc: j })
-                            : update(i, {
-                                select: chosen ? drafts[i]!.select.filter((k) => k !== j) : [...drafts[i]!.select, j],
-                              })
-                        }
-                        className="mt-[5px] accent-[var(--accent)]"
-                      />
-                      <span className="shrink-0 font-mono text-[11px] text-ink3 mt-[3px]">{LETTERS[j]}</span>
-                      <span className="min-w-0 flex-1">
-                        <MathText text={option} />
-                      </span>
-                      {graded && isKey ? <span className="shrink-0 text-[11px] font-semibold text-accent-ink">Correct</span> : null}
-                      {graded && chosen && !isKey ? (
-                        <span className="shrink-0 text-[11px] font-semibold text-amber">Your pick</span>
-                      ) : null}
-                    </label>
-                  );
-                })}
-                {part.kind === "select_all" && !graded ? (
-                  <span className="text-[11.5px] text-ink3">Select all that apply — possibly none.</span>
-                ) : null}
-              </div>
-            )}
-          </section>
-        );
-      })}
+      {question.parts.map((part, i) => (
+        <PartField
+          key={i}
+          part={part}
+          index={i}
+          count={question.parts.length}
+          name={`${name}-p${i}`}
+          draft={drafts[i]!}
+          onChange={(patch) => update(i, patch)}
+          disabled={submitting}
+          result={graded?.results[i] ?? null}
+          partKey={graded?.answers[i] ?? null}
+        />
+      ))}
 
       {error ? (
         <p role="alert" className="m-0 rounded-lg bg-amber-soft px-3 py-2.5 text-[12.5px] text-amber">
@@ -221,27 +140,39 @@ export default function QuestionCard({ courseId, question, graded, onGraded, onC
             disabled={!ready || submitting}
             className="button-primary h-9 cursor-pointer disabled:cursor-default disabled:opacity-50"
           >
-            {submitting ? "Checking…" : "Check my answer"}
+            {submitting ? (hasWritten ? "Reading your work…" : "Checking…") : "Check my answer"}
           </button>
           {!ready ? <span className="text-[12px] text-ink3">Answer every part first.</span> : null}
         </div>
       ) : (
         <section className="flex flex-col gap-3 border-t border-line pt-5">
-          <span className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">Worked solution</span>
-          <MessageBubble
-            message={{ role: "assistant", content: graded.explanation, sources: graded.sources }}
-            messageIndex={0}
-            onCiteClick={(_, n) => onCite(n)}
-          />
+          <p role="status" className="m-0 text-[12.5px] font-semibold text-ink2">
+            {scoreLabel(question.parts, graded.results)}
+          </p>
+          {explanationCollapsed ? (
+            <details className="flex flex-col gap-3">
+              <summary className="cursor-pointer text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">
+                Worked solution
+              </summary>
+              <div className="pt-3">{explanation}</div>
+            </details>
+          ) : (
+            <>
+              <span className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">Worked solution</span>
+              {explanation}
+            </>
+          )}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
-            <Link
-              href={`/app/courses/${courseId}?practice=${question.id}`}
-              className="text-[12.5px] font-semibold text-accent-ink hover:underline"
-            >
-              Talk it through with Polya →
-            </Link>
+            {talkThrough ? (
+              <Link
+                href={`/app/courses/${courseId}?practice=${question.id}`}
+                className="text-[12.5px] font-semibold text-accent-ink hover:underline"
+              >
+                Talk it through with Polya →
+              </Link>
+            ) : null}
             {reported ? (
-              <span className="text-[12px] text-ink3">Thanks — this question won&apos;t come up again.</span>
+              <span className="text-[12px] text-ink3">Thanks. This question won&apos;t come up again.</span>
             ) : (
               <button
                 type="button"
@@ -259,7 +190,7 @@ export default function QuestionCard({ courseId, question, graded, onGraded, onC
                 onChange={(e) => setReportNote(e.target.value)}
                 rows={2}
                 maxLength={1000}
-                placeholder="What's wrong? (optional) — e.g. the answer looks off, or it's not on the exam"
+                placeholder="What's wrong? (optional) For example, the answer looks off, or it's not on the exam"
                 className="w-full resize-y rounded-lg border border-line bg-surface px-3 py-[9px] text-[12.5px] outline-none placeholder:text-ink3 focus:border-accent"
               />
               <button type="button" onClick={() => void report()} className="button-secondary h-8 cursor-pointer self-start text-[12.5px]">

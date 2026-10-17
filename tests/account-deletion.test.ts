@@ -139,7 +139,7 @@ test("chunk splits into batches", () => {
 test("bucket and table inventory covers Polya", () => {
   assert.ok(USER_PREFIXED_BUCKETS.includes("polya_documents"));
   const polya = USER_TABLES.filter((t) => t.table.startsWith("polya_"));
-  assert.equal(polya.length, 19);
+  assert.equal(polya.length, 21);
   assert.ok(polya.every((t) => t.onDelete === "cascade"));
   assert.ok(USER_TABLES.some((t) => t.table === "activity_hours" && t.onDelete === "none"));
 });

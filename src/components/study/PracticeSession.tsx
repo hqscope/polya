@@ -25,6 +25,8 @@ interface Props {
   onQuestionsAdded: (questions: QuestionRow[]) => void;
   onAttempt: (attempt: AttemptRow) => void;
   onReported: (questionId: string) => void;
+  /** Questions held by a mock exam that isn't handed in yet; never served here. */
+  reservedIds?: ReadonlySet<string>;
 }
 
 type Notice = { tone: "info" | "warn"; text: string; retry?: boolean } | null;
@@ -43,6 +45,7 @@ export default function PracticeSession({
   onQuestionsAdded,
   onAttempt,
   onReported,
+  reservedIds,
 }: Props) {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [graded, setGraded] = useState<GradedAttempt | null>(null);
@@ -50,7 +53,7 @@ export default function PracticeSession({
   const [notice, setNotice] = useState<Notice>(null);
   const [viewing, setViewing] = useState<TutorSource | null>(null);
   const [answered, setAnswered] = useState(0);
-  const skip = useRef(new Set<string>());
+  const skip = useRef(new Set<string>(reservedIds));
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
   const topicTitle = topicId ? topics.find((t) => t.id === topicId)?.title : null;
 
@@ -121,8 +124,10 @@ export default function PracticeSession({
     setAnswered((n) => n + 1);
     if (question) {
       onAttempt({
+        id: result.attempt_id ?? undefined,
         question_id: question.id,
         topic_id: question.topic_id,
+        topic_ids: result.topic_ids,
         score: result.score,
         all_correct: result.all_correct,
         created_at: new Date().toISOString(),

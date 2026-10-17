@@ -12,6 +12,7 @@ const LETTERS = ["A", "B", "C", "D", "E", "F"];
 function describeResponse(part: PublicPart, response: PartResponse | undefined): string | null {
   if (!response || response.kind !== part.kind) return null;
   if (response.kind === "numeric") return response.answer.trim() || null;
+  if (response.kind === "free_response") return response.text.trim() || null;
   if (response.kind === "mc") return LETTERS[response.choice] ?? null;
   const letters = response.choices.map((i) => LETTERS[i]).filter(Boolean);
   return letters.length > 0 ? letters.join(", ") : "none";
@@ -26,7 +27,7 @@ export function buildPracticeSeed(input: {
   const lines = ["I'm working on this practice question:", "", input.stem.trim()];
   input.parts.forEach((part, i) => {
     lines.push("", input.parts.length > 1 ? `Part ${i + 1}: ${part.prompt}` : part.prompt);
-    if (part.kind !== "numeric") {
+    if (part.kind === "mc" || part.kind === "select_all") {
       part.options.forEach((option, j) => lines.push(`${LETTERS[j]}. ${option}`));
     }
     const answer = describeResponse(part, input.responses?.[i]);

@@ -64,11 +64,16 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
         }
       } else {
         // page / assignment / syllabus / transcript — show the stored unit text.
-        const { data: unit } = await supabase
-          .from("polya_content_units")
-          .select("content")
-          .eq("id", source.unit_id)
-          .maybeSingle();
+        // A whole file opened from a list (no cited passage) starts at its top.
+        const { data: unit } = source.unit_id
+          ? await supabase.from("polya_content_units").select("content").eq("id", source.unit_id).maybeSingle()
+          : await supabase
+            .from("polya_content_units")
+            .select("content")
+            .eq("source_id", source.source_id)
+            .order("ordinal", { ascending: true })
+            .limit(1)
+            .maybeSingle();
         if (cancelled) return;
         setBodyText((unit?.content as string) ?? source.snippet);
       }
@@ -92,9 +97,11 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
 
       <div className="flex shrink-0 flex-col gap-1.5 border-b border-line-soft px-3.5 py-3">
         <div className="flex min-w-0 items-center gap-[7px]">
-          <span className="inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded bg-accent px-1 text-[10px] font-bold text-on-accent">
-            {source.n}
-          </span>
+          {source.n > 0 ? (
+            <span className="inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center rounded bg-accent px-1 text-[10px] font-bold text-on-accent">
+              {source.n}
+            </span>
+          ) : null}
           <span className="truncate text-[13px] font-semibold">
             {source.title}
           </span>

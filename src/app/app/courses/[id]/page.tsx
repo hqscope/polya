@@ -68,6 +68,8 @@ export default async function CoursePage({
           .from("polya_conversations")
           .select("id, title, last_message_at")
           .eq("course_id", id)
+          // Exam coach threads live on their exam's page.
+          .is("exam_id", null)
           .not("last_message_at", "is", null)
           .order("last_message_at", { ascending: false })
           .limit(RECENT_CONVERSATION_LIMIT),
@@ -85,6 +87,12 @@ export default async function CoursePage({
   // own sources so [n] citations keep resolving against the right evidence.
   let initialMessages: ChatMessage[] = [];
   if (conversationId) {
+    const { data: thread } = await supabase
+      .from("polya_conversations")
+      .select("exam_id")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (thread?.exam_id) redirect(`/app/courses/${id}/study/${thread.exam_id}`);
     const { data: rows } = await supabase
       .from("polya_messages")
       .select("role, content, sources")

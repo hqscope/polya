@@ -1,6 +1,7 @@
 import { getSupabaseFunctionsUrl, getSupabaseConfig } from "@/lib/supabase/config";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
-import { AI_BUSY_POLYA_TUTOR } from "@/lib/ai-busy";
+import { AI_BUSY_CODE, AI_BUSY_POLYA_TUTOR } from "@/lib/ai-busy";
+import { createSSEDecoder, type SSEEvent } from "@/lib/sse-parse";
 import { POLYA_ERROR_SIGNED_OUT } from "@/lib/user-message";
 
 export interface TutorSource {
@@ -65,82 +66,112 @@ export interface TutorRequest {
   context?: string | LectureContextInput;
 }
 
-// Streams polya-tutor, dispatching sources / delta / done / error events.
-export async function streamTutor(
-  request: TutorRequest,
-  handlers: TutorStreamHandlers,
+export type FunctionStreamOpen =
+  | { ok: true; response: Response }
+  | { ok: false; message: string; code?: string; status: number };
+
+export interface FunctionStreamCopy {
+  /** Shown when the AI budget is spent for the day (503 + code "busy"). */
+  busy: string;
+  /** Shown when the function fails without its own message. */
+  unavailable: string;
+}
+
+const TUTOR_COPY: FunctionStreamCopy = {
+  busy: AI_BUSY_POLYA_TUTOR,
+  unavailable: "The tutor is unavailable right now.",
+};
+
+// POSTs to a streaming edge function as the signed-in student. Resolves with
+// the open response, or with the message to show when it couldn't start.
+// No auto-retry on busy: COPY.md §11 makes "Try Again" an explicit user action.
+export async function openFunctionStream(
+  name: string,
+  body: unknown,
   signal?: AbortSignal,
-): Promise<void> {
+  copy: FunctionStreamCopy = TUTOR_COPY,
+): Promise<FunctionStreamOpen> {
   const supabase = createBrowserSupabaseClient();
   const {
     data: { session },
   } = await supabase.auth.getSession();
   if (!session?.access_token) {
-    handlers.onError(POLYA_ERROR_SIGNED_OUT, "unauthorized");
-    return;
+    return { ok: false, message: POLYA_ERROR_SIGNED_OUT, code: "unauthorized", status: 401 };
   }
 
-  const response = await fetch(`${getSupabaseFunctionsUrl()}/polya-tutor`, {
+  const response = await fetch(`${getSupabaseFunctionsUrl()}/${name}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: getSupabaseConfig().anonKey,
       Authorization: `Bearer ${session.access_token}`,
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     signal,
   });
 
   if (!response.ok || !response.body) {
     const data = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
-    if (response.status === 503 && data.code === "busy") {
-      // No auto-retry: COPY.md §11 makes the "Try Again" affordance (if any)
-      // an explicit user action, never something this client does itself.
-      handlers.onError(AI_BUSY_POLYA_TUTOR, "busy");
-      return;
+    if (response.status === 503 && data.code === AI_BUSY_CODE) {
+      return { ok: false, message: copy.busy, code: AI_BUSY_CODE, status: response.status };
     }
-    handlers.onError(data.error ?? "The tutor is unavailable right now.", data.code);
-    return;
+    return { ok: false, message: data.error ?? copy.unavailable, code: data.code, status: response.status };
   }
+  return { ok: true, response };
+}
 
+// Reads an open stream to the end, handing each event to `onEvent` as it
+// completes. Rejects if the request is aborted mid-read.
+export async function readEvents(response: Response, onEvent: (event: SSEEvent) => void): Promise<void> {
+  if (!response.body) return;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-
+  const sse = createSSEDecoder();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) {
-      const eventMatch = block.match(/event: (\w+)/);
-      const dataMatch = block.match(/data: ([\s\S]+)/);
-      if (!eventMatch || !dataMatch) continue;
-      const payload = JSON.parse(dataMatch[1]!);
-      switch (eventMatch[1]) {
-        case "sources":
-          handlers.onSources(payload);
-          break;
-        case "delta":
-          handlers.onDelta(payload.text);
-          break;
-        case "done":
-          handlers.onDone(payload);
-          break;
-        case "mastery":
-          handlers.onMastery?.(payload);
-          break;
-        case "error":
-          // Budget claims happen before the stream opens (R-5), so a busy
-          // refusal is expected on the non-OK branch above, not here — this
-          // is defensive in case that ever changes.
-          handlers.onError(
-            payload.code === "busy" ? AI_BUSY_POLYA_TUTOR : payload.error,
-            payload.code,
-          );
-          break;
+    for (const event of sse.push(decoder.decode(value, { stream: true }))) onEvent(event);
+  }
+  const tail = decoder.decode();
+  if (tail) for (const event of sse.push(tail)) onEvent(event);
+}
+
+// Streams polya-tutor, dispatching sources / delta / done / error events.
+export async function streamTutor(
+  request: TutorRequest,
+  handlers: TutorStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const opened = await openFunctionStream("polya-tutor", request, signal);
+  if (!opened.ok) {
+    handlers.onError(opened.message, opened.code);
+    return;
+  }
+
+  await readEvents(opened.response, ({ event, data }) => {
+    const payload = (data ?? {}) as Record<string, unknown>;
+    switch (event) {
+      case "sources":
+        handlers.onSources(payload as Parameters<TutorStreamHandlers["onSources"]>[0]);
+        break;
+      case "delta":
+        handlers.onDelta(typeof payload.text === "string" ? payload.text : "");
+        break;
+      case "done":
+        handlers.onDone(payload as Parameters<TutorStreamHandlers["onDone"]>[0]);
+        break;
+      case "mastery":
+        handlers.onMastery?.(payload as Parameters<NonNullable<TutorStreamHandlers["onMastery"]>>[0]);
+        break;
+      case "error": {
+        // Budget claims happen before the stream opens (R-5), so a busy
+        // refusal is expected on the non-OK branch above, not here — this
+        // is defensive in case that ever changes.
+        const code = typeof payload.code === "string" ? payload.code : undefined;
+        const message = typeof payload.error === "string" ? payload.error : TUTOR_COPY.unavailable;
+        handlers.onError(code === AI_BUSY_CODE ? AI_BUSY_POLYA_TUTOR : message, code);
+        break;
       }
     }
-  }
+  });
 }

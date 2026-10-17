@@ -20,14 +20,23 @@ export interface ProgressQuestion {
   topic_id: string;
   status: string;
   created_at: string;
+  /** "bank" (independently checked) or "coach" (written mid-conversation). Missing = bank. */
+  origin?: string | null;
 }
 
 export interface ProgressAttempt {
   question_id: string;
   topic_id: string;
+  /** Every topic a mixed question covered (topic_id is the first). */
+  topic_ids?: readonly string[] | null;
   score: number;
   all_correct: boolean;
   created_at: string;
+}
+
+/** Every topic an attempt counts toward. */
+export function attemptTopics(attempt: Pick<ProgressAttempt, "topic_id" | "topic_ids">): string[] {
+  return [...new Set([attempt.topic_id, ...(attempt.topic_ids ?? [])])];
 }
 
 export interface TopicProgress {
@@ -56,9 +65,11 @@ export function progressByTopic(
 ): Map<string, TopicProgress> {
   const grouped = new Map<string, ProgressAttempt[]>();
   for (const attempt of attempts) {
-    const list = grouped.get(attempt.topic_id) ?? [];
-    list.push(attempt);
-    grouped.set(attempt.topic_id, list);
+    for (const topicId of attemptTopics(attempt)) {
+      const list = grouped.get(topicId) ?? [];
+      list.push(attempt);
+      grouped.set(topicId, list);
+    }
   }
   return new Map(topics.map((topic) => [topic.id, topicProgress(grouped.get(topic.id) ?? [])]));
 }
@@ -122,7 +133,9 @@ export function pickNext(input: {
   for (const attempt of [...attempts].sort(byNewest)) {
     if (!lastAttempt.has(attempt.question_id)) lastAttempt.set(attempt.question_id, attempt);
   }
-  const usable = questions.filter((q) => q.status === "active" && !skip?.has(q.id));
+  // Practice serves only independently checked questions; ones the coach wrote
+  // mid-conversation stay in that conversation.
+  const usable = questions.filter((q) => q.status === "active" && (q.origin ?? "bank") === "bank" && !skip?.has(q.id));
 
   for (const topic of candidates) {
     const inTopic = usable.filter((q) => q.topic_id === topic.id);
@@ -139,4 +152,135 @@ export function pickNext(input: {
   }
 
   return { kind: "write", topicId: candidates[0]!.id };
+}
+
+// ---------------------------------------------------------------------------
+// Mastery stages (the coach's tracker). The coach stores learning /
+// practicing / exam_ready on a topic; "not started" and "needs review" are
+// worked out here from the attempts, so they can't go stale.
+// ---------------------------------------------------------------------------
+export type StoredStage = "learning" | "practicing" | "exam_ready";
+export type MasteryStage = "not_started" | StoredStage | "needs_review";
+
+export const STORED_STAGES: readonly StoredStage[] = ["learning", "practicing", "exam_ready"];
+export const MASTERY_STAGES: readonly MasteryStage[] = ["not_started", "learning", "practicing", "exam_ready", "needs_review"];
+
+/** An exam-ready topic left alone this long needs a refresher. */
+export const REVIEW_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+export function isStoredStage(value: unknown): value is StoredStage {
+  return value === "learning" || value === "practicing" || value === "exam_ready";
+}
+
+/** Exam-ready needs recent, consistent evidence: the same bar as "solid". */
+export function canMarkExamReady(progress: TopicProgress): boolean {
+  return progress.status === "solid";
+}
+
+export interface StageTopic extends ProgressTopic {
+  stage?: string | null;
+}
+
+export interface TopicStageInfo {
+  stage: MasteryStage;
+  progress: TopicProgress;
+  /** Newest attempt in this topic, if any. */
+  lastAttemptAt: string | null;
+}
+
+export function effectiveStage(input: {
+  stored: string | null | undefined;
+  progress: TopicProgress;
+  lastAttempt: { created_at: string; all_correct: boolean } | null;
+  now: number;
+}): MasteryStage {
+  const { stored, progress, lastAttempt, now } = input;
+  if (stored === "exam_ready") {
+    if (!lastAttempt) return "exam_ready";
+    if (!lastAttempt.all_correct) return "needs_review";
+    if (now - Date.parse(lastAttempt.created_at) >= REVIEW_AFTER_MS) return "needs_review";
+    return "exam_ready";
+  }
+  if (stored === "learning" || stored === "practicing") return stored;
+  // Never staged by the coach: answered questions (e.g. from the drill) count
+  // as practicing; nothing yet is not started.
+  return progress.attempts > 0 ? "practicing" : "not_started";
+}
+
+export function stagesByTopic(
+  topics: readonly StageTopic[],
+  attempts: readonly ProgressAttempt[],
+  now: number,
+): Map<string, TopicStageInfo> {
+  const progress = progressByTopic(topics, attempts);
+  const latest = new Map<string, ProgressAttempt>();
+  for (const attempt of [...attempts].sort(byNewest)) {
+    for (const topicId of attemptTopics(attempt)) {
+      if (!latest.has(topicId)) latest.set(topicId, attempt);
+    }
+  }
+  return new Map(
+    topics.map((topic) => {
+      const p = progress.get(topic.id)!;
+      const last = latest.get(topic.id) ?? null;
+      return [
+        topic.id,
+        {
+          stage: effectiveStage({ stored: topic.stage, progress: p, lastAttempt: last, now }),
+          progress: p,
+          lastAttemptAt: last?.created_at ?? null,
+        },
+      ];
+    }),
+  );
+}
+
+/**
+ * What's due for spaced review: topics whose stage slipped to needs review,
+ * and questions missed at least RETRY_AFTER_MS ago that haven't been answered
+ * right since (oldest miss first).
+ */
+export function dueReviews(input: {
+  topics: readonly StageTopic[];
+  attempts: readonly ProgressAttempt[];
+  now: number;
+  limit?: number;
+}): { topicIds: string[]; questionIds: string[] } {
+  const { topics, attempts, now } = input;
+  const limit = input.limit ?? 5;
+  const stages = stagesByTopic(topics, attempts, now);
+  const topicIds = topics.filter((t) => stages.get(t.id)?.stage === "needs_review").map((t) => t.id).slice(0, limit);
+
+  const last = new Map<string, ProgressAttempt>();
+  for (const attempt of [...attempts].sort(byNewest)) {
+    if (!last.has(attempt.question_id)) last.set(attempt.question_id, attempt);
+  }
+  const questionIds = [...last.values()]
+    .filter((a) => !a.all_correct && now - Date.parse(a.created_at) >= RETRY_AFTER_MS)
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+    .map((a) => a.question_id)
+    .slice(0, limit);
+  return { topicIds, questionIds };
+}
+
+export interface StudyErrorRow {
+  id: string;
+  topic_id: string | null;
+  created_at: string;
+}
+
+/**
+ * Whether each logged mistake is fixed: a later, fully right answer on the
+ * same topic. A mistake with no topic stays open until the student clears it.
+ */
+export function errorStatus<T extends StudyErrorRow>(
+  errors: readonly T[],
+  attempts: readonly ProgressAttempt[],
+): (T & { fixed: boolean })[] {
+  return errors.map((error) => {
+    const at = Date.parse(error.created_at);
+    const fixed = error.topic_id !== null &&
+      attempts.some((a) => a.all_correct && Date.parse(a.created_at) > at && attemptTopics(a).includes(error.topic_id!));
+    return { ...error, fixed };
+  });
 }

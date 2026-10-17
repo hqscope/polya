@@ -126,3 +126,74 @@ test("the chat seed lays out the question and the student's answers", () => {
   const long = buildPracticeSeed({ stem: "x".repeat(20_000), parts: [] });
   assert.equal(long.length, PRACTICE_SEED_MAX_CHARS);
 });
+
+// ---------------------------------------------------------------------------
+// Mastery stages, spaced review and mistakes (the exam coach).
+// ---------------------------------------------------------------------------
+import {
+  canMarkExamReady,
+  dueReviews,
+  effectiveStage,
+  errorStatus,
+  progressByTopic,
+  REVIEW_AFTER_MS,
+  stagesByTopic,
+} from "../supabase/functions/_shared/study-progress.ts";
+
+test("a mixed question counts toward every topic it covered", () => {
+  const progress = progressByTopic(
+    [{ id: "a", position: 0 }, { id: "b", position: 1 }],
+    [{ question_id: "q", topic_id: "a", topic_ids: ["a", "b"], score: 1, all_correct: true, created_at: ago(HOUR) }],
+  );
+  assert.equal(progress.get("a")!.attempts, 1);
+  assert.equal(progress.get("b")!.attempts, 1);
+});
+
+test("practice never serves questions the coach wrote mid-conversation", () => {
+  const next = pickNext({
+    topics: [{ id: "a", position: 0 }],
+    questions: [{ ...question("coach-q", "a"), origin: "coach" }, question("bank-q", "a")],
+    attempts: [],
+    now: NOW,
+  });
+  assert.deepEqual(next, { kind: "question", questionId: "bank-q", topicId: "a" });
+});
+
+test("stages: stored ones hold, exam-ready slips to needs review after a miss or time away", () => {
+  const solid = topicProgress([attempt("1", "a", 1, ago(HOUR)), attempt("2", "a", 1, ago(HOUR)), attempt("3", "a", 1, ago(HOUR))]);
+  assert.equal(canMarkExamReady(solid), true);
+  assert.equal(canMarkExamReady(topicProgress([attempt("1", "a", 1, ago(HOUR))])), false);
+
+  const right = { created_at: ago(HOUR), all_correct: true };
+  assert.equal(effectiveStage({ stored: "exam_ready", progress: solid, lastAttempt: right, now: NOW }), "exam_ready");
+  assert.equal(effectiveStage({ stored: "exam_ready", progress: solid, lastAttempt: { ...right, all_correct: false }, now: NOW }), "needs_review");
+  assert.equal(
+    effectiveStage({ stored: "exam_ready", progress: solid, lastAttempt: { ...right, created_at: ago(REVIEW_AFTER_MS + HOUR) }, now: NOW }),
+    "needs_review",
+  );
+  assert.equal(effectiveStage({ stored: "learning", progress: solid, lastAttempt: right, now: NOW }), "learning");
+  assert.equal(effectiveStage({ stored: null, progress: topicProgress([]), lastAttempt: null, now: NOW }), "not_started");
+  assert.equal(effectiveStage({ stored: null, progress: solid, lastAttempt: right, now: NOW }), "practicing");
+});
+
+test("due reviews: slipped topics and old misses, oldest first", () => {
+  const topics = [{ id: "a", position: 0, stage: "exam_ready" }, { id: "b", position: 1, stage: "practicing" }];
+  const attempts = [
+    attempt("q1", "a", 0, ago(2 * HOUR)),
+    attempt("q2", "b", 0, ago(30 * HOUR)),
+    attempt("q3", "b", 0, ago(50 * HOUR)),
+    attempt("q4", "b", 1, ago(60 * HOUR)),
+  ];
+  assert.equal(stagesByTopic(topics, attempts, NOW).get("a")!.stage, "needs_review");
+  assert.deepEqual(dueReviews({ topics, attempts, now: NOW }), { topicIds: ["a"], questionIds: ["q3", "q2"] });
+});
+
+test("a logged mistake is fixed by a later fully right answer on its topic", () => {
+  const errors = [
+    { id: "e1", topic_id: "a", created_at: ago(10 * HOUR) },
+    { id: "e2", topic_id: "b", created_at: ago(10 * HOUR) },
+    { id: "e3", topic_id: null, created_at: ago(10 * HOUR) },
+  ];
+  const status = errorStatus(errors, [attempt("q", "a", 1, ago(HOUR)), attempt("r", "b", 1, ago(20 * HOUR))]);
+  assert.deepEqual(status.map((e) => e.fixed), [true, false, false]);
+});

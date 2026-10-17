@@ -98,3 +98,25 @@ export const STUDY_TOPICS_DAILY_LIMIT = 6;
 export const STUDY_TOPICS_DAILY_BUCKET = "polya-study:topics:day";
 // Every body is ids plus a few short answers.
 export const STUDY_MAX_BODY_BYTES = 64 * 1024;
+
+// polya-study, exam coach additions: grading written answers is one Claude
+// call per submission; mock exams are built from checked questions, writing
+// new batches (two calls each) only for topics the bank can't cover.
+export const STUDY_GRADE_DAILY_LIMIT = 60;
+export const STUDY_GRADE_DAILY_BUCKET = "polya-study:grade:day";
+export const STUDY_MOCK_WRITE_DAILY_LIMIT = 12;
+export const STUDY_MOCK_WRITE_DAILY_BUCKET = "polya-study:mock-write:day";
+
+// ---------------------------------------------------------------------------
+// polya-coach: each turn is up to three Claude calls (COACH_MAX_CALLS), and
+// answering a question or handing in a mock starts a turn on its own, so the
+// coach has its own windows rather than sharing the tutor's 100 turns a day.
+// ---------------------------------------------------------------------------
+export const COACH_HOURLY_LIMIT = 60;
+export const COACH_HOURLY_BUCKET = "polya-coach:hour";
+export const COACH_DAILY_LIMIT = 100;
+export const COACH_DAILY_BUCKET = "polya-coach:day";
+export const COACH_MOCK_DAILY_LIMIT = 3;
+export const COACH_MOCK_DAILY_BUCKET = "polya-coach:mock:day";
+// A message (≤ 8,000 characters) plus ids.
+export const COACH_MAX_BODY_BYTES = 16 * 1024;

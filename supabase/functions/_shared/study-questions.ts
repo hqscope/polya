@@ -7,9 +7,18 @@
 // whose options are numbers keeps exactly one option equal to the computed
 // answer. A second, independent solve (the "checker", which never sees the
 // key) must then reach the same answers, or the question is dropped.
+//
+// Written (free-response) parts have no number to check. Their key is a
+// rubric of checkable points plus a model answer, graded later by a separate
+// rubric call (study-grade.ts parseGraderOutput).
 
 import { evalExpression, expressionToLatex } from "./study-expr.ts";
-import { withinTolerance, type PartKey, type PartResponse } from "./study-grade.ts";
+import {
+  MAX_WRITTEN_ANSWER_CHARS,
+  withinTolerance,
+  type PartKey,
+  type PartResponse,
+} from "./study-grade.ts";
 
 export const QUESTIONS_PER_CALL = 2;
 export const MAX_PARTS = 4;
@@ -20,8 +29,13 @@ const MAX_PROMPT_CHARS = 1_200;
 const MAX_OPTION_CHARS = 400;
 const MAX_EXPLANATION_CHARS = 8_000;
 const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"] as const;
+export const MAX_WRITTEN_PARTS = 2;
+export const MAX_RUBRIC_POINTS = 6;
+const MAX_RUBRIC_POINT_CHARS = 200;
+const MAX_MODEL_ANSWER_CHARS = 3_000;
+export const MAX_PART_POINTS = 10;
 
-export type PartKind = "numeric" | "mc" | "select_all";
+export type PartKind = "numeric" | "mc" | "select_all" | "free_response";
 
 // ---------------------------------------------------------------------------
 // What the question writer returns (structured output, WRITER_SCHEMA).
@@ -37,6 +51,11 @@ export interface WriterPart {
   prompt: string;
   answer_expr: string;
   options: WriterOption[];
+  // Written parts only (the free-response writer schema and the coach always
+  // send them; the bank writer's schema has no written parts).
+  rubric?: string[];
+  model_answer?: string;
+  points?: number;
 }
 
 export interface WriterQuestion {
@@ -49,7 +68,8 @@ export interface WriterQuestion {
 export type PublicPart =
   | { kind: "numeric"; prompt: string }
   | { kind: "mc"; prompt: string; options: string[] }
-  | { kind: "select_all"; prompt: string; options: string[] };
+  | { kind: "select_all"; prompt: string; options: string[] }
+  | { kind: "free_response"; prompt: string; points: number };
 
 export interface PreparedQuestion {
   stem: string;
@@ -104,6 +124,38 @@ export const WRITER_SCHEMA = {
             },
           },
           explanation: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
+// The same writer with written (explain / derive) parts allowed. Separate so
+// the bank writer's schema — and the questions it produces — stay unchanged.
+const writerPartsItems = WRITER_SCHEMA.properties.questions.items.properties.parts.items;
+export const WRITER_SCHEMA_FR = {
+  ...WRITER_SCHEMA,
+  properties: {
+    questions: {
+      ...WRITER_SCHEMA.properties.questions,
+      items: {
+        ...WRITER_SCHEMA.properties.questions.items,
+        properties: {
+          ...WRITER_SCHEMA.properties.questions.items.properties,
+          parts: {
+            type: "array",
+            items: {
+              ...writerPartsItems,
+              required: [...writerPartsItems.required, "rubric", "model_answer", "points"],
+              properties: {
+                ...writerPartsItems.properties,
+                kind: { type: "string", enum: ["numeric", "mc", "select_all", "free_response"] },
+                rubric: { type: "array", items: { type: "string" } },
+                model_answer: { type: "string" },
+                points: { type: "integer" },
+              },
+            },
+          },
         },
       },
     },
@@ -171,10 +223,10 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === "string";
 
-function asWriterPart(value: unknown): WriterPart | null {
+export function asWriterPart(value: unknown): WriterPart | null {
   if (!isObject(value)) return null;
   const { kind, prompt, answer_expr, options } = value;
-  if (kind !== "numeric" && kind !== "mc" && kind !== "select_all") return null;
+  if (kind !== "numeric" && kind !== "mc" && kind !== "select_all" && kind !== "free_response") return null;
   if (!isString(prompt) || !isString(answer_expr) || !Array.isArray(options)) return null;
   const opts: WriterOption[] = [];
   for (const option of options) {
@@ -183,7 +235,17 @@ function asWriterPart(value: unknown): WriterPart | null {
     }
     opts.push({ expr: option.expr, text: option.text, correct: option.correct });
   }
-  return { kind, prompt, answer_expr, options: opts };
+  const part: WriterPart = { kind, prompt, answer_expr, options: opts };
+  if (kind === "free_response") {
+    const { rubric, model_answer, points } = value;
+    if (!Array.isArray(rubric) || !rubric.every(isString) || !isString(model_answer) || typeof points !== "number") {
+      return null;
+    }
+    part.rubric = rubric as string[];
+    part.model_answer = model_answer;
+    part.points = points;
+  }
+  return part;
 }
 
 export function parseWriterOutput(value: unknown): WriterQuestion[] | null {
@@ -264,6 +326,23 @@ function prepareNumeric(prompt: string, part: WriterPart): PartResult {
   return { ok: true, part: { kind: "numeric", prompt }, key: { kind: "numeric", expr, value: value.value } };
 }
 
+function prepareWritten(prompt: string, part: WriterPart): PartResult {
+  const rubric = (part.rubric ?? []).map(clean).filter(Boolean);
+  if (rubric.length < 1 || rubric.length > MAX_RUBRIC_POINTS) return { ok: false, reason: `${rubric.length} rubric points` };
+  if (rubric.some((point) => point.length > MAX_RUBRIC_POINT_CHARS)) return { ok: false, reason: "a rubric point is too long" };
+  const modelAnswer = clean(part.model_answer ?? "");
+  if (!modelAnswer || modelAnswer.length > MAX_MODEL_ANSWER_CHARS) {
+    return { ok: false, reason: "model answer is empty or too long" };
+  }
+  const points = part.points ?? 0;
+  if (!Number.isInteger(points) || points < 1 || points > MAX_PART_POINTS) return { ok: false, reason: `${points} points` };
+  return {
+    ok: true,
+    part: { kind: "free_response", prompt, points },
+    key: { kind: "free_response", rubric, model_answer: modelAnswer, points },
+  };
+}
+
 function prepareChoices(prompt: string, part: WriterPart, random: () => number): PartResult {
   const options = part.options;
   if (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) {
@@ -337,12 +416,19 @@ export function prepareQuestion(
   if (question.parts.length < 1 || question.parts.length > MAX_PARTS) {
     return { ok: false, reason: `${question.parts.length} parts` };
   }
+  if (question.parts.filter((part) => part.kind === "free_response").length > MAX_WRITTEN_PARTS) {
+    return { ok: false, reason: "too many written parts" };
+  }
   const parts: PublicPart[] = [];
   const keys: PartKey[] = [];
   for (const [i, part] of question.parts.entries()) {
     const prompt = clean(part.prompt);
     if (!prompt || prompt.length > MAX_PROMPT_CHARS) return { ok: false, reason: `part ${i + 1}: prompt is empty or too long` };
-    const result = part.kind === "numeric" ? prepareNumeric(prompt, part) : prepareChoices(prompt, part, random);
+    const result = part.kind === "numeric"
+      ? prepareNumeric(prompt, part)
+      : part.kind === "free_response"
+      ? prepareWritten(prompt, part)
+      : prepareChoices(prompt, part, random);
     if (!result.ok) return { ok: false, reason: `part ${i + 1}: ${result.reason}` };
     parts.push(result.part);
     keys.push(result.key);
@@ -362,10 +448,15 @@ export function prepareQuestion(
 export function questionForChecker(index: number, question: { stem: string; parts: PublicPart[] }): string {
   const lines = [`QUESTION ${index + 1}`, question.stem];
   question.parts.forEach((part, i) => {
-    const kindLabel =
-      part.kind === "numeric" ? "numeric answer" : part.kind === "mc" ? "choose one" : "select all that apply";
+    const kindLabel = part.kind === "numeric"
+      ? "numeric answer"
+      : part.kind === "mc"
+      ? "choose one"
+      : part.kind === "select_all"
+      ? "select all that apply"
+      : `written answer worth ${part.points} points: explain or derive; give answer_expr "" and choices []`;
     lines.push(`Part ${i + 1} (${kindLabel}): ${part.prompt}`);
-    if (part.kind !== "numeric") {
+    if (part.kind === "mc" || part.kind === "select_all") {
       part.options.forEach((option, j) => lines.push(`  ${OPTION_LETTERS[j]}. ${option}`));
     }
   });
@@ -386,6 +477,9 @@ export function checkAgreement(keys: readonly PartKey[], answer: CheckerAnswer |
   if (answer.parts.length !== keys.length) return { agree: false, reason: "answered a different number of parts" };
   for (const [i, key] of keys.entries()) {
     const part = answer.parts[i]!;
+    // A written part has no single value to compare; the checker's `problem`
+    // (checked above) is what catches an unanswerable one.
+    if (key.kind === "free_response") continue;
     if (key.kind === "numeric") {
       const value = evalExpression(part.answer_expr.trim());
       if (!value.ok) return { agree: false, reason: `part ${i + 1}: independent answer doesn't evaluate` };
@@ -473,6 +567,8 @@ export function parseResponses(value: unknown): PartResponse[] | null {
       item.choices.every((c) => Number.isInteger(c))
     ) {
       responses.push({ kind: "select_all", choices: item.choices as number[] });
+    } else if (item.kind === "free_response" && isString(item.text) && item.text.length <= MAX_WRITTEN_ANSWER_CHARS) {
+      responses.push({ kind: "free_response", text: item.text });
     } else {
       return null;
     }

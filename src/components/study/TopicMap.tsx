@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { MathSpan } from "@/components/MathText";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
@@ -8,7 +8,7 @@ import { POLYA_ERROR_GENERIC } from "@/lib/user-message";
 import { TOPIC_STATUS_CLASS, TOPIC_STATUS_LABEL, type TopicRow } from "@/lib/study";
 import type { TopicProgress } from "../../../supabase/functions/_shared/study-progress.ts";
 
-const SELECT = "id, position, title, summary, key_formulas, source_ids, origin";
+const SELECT = "id, position, title, summary, key_formulas, source_ids, origin, stage";
 
 interface Props {
   examId: string;
@@ -16,12 +16,14 @@ interface Props {
   progress: Map<string, TopicProgress>;
   onChange: (topics: TopicRow[]) => void;
   onPractice: (topicId: string) => void;
+  /** Replaces the status badge (the exam coach shows each topic's stage). */
+  badge?: (topic: TopicRow) => ReactNode;
 }
 
 // The exam's topics in study order, each with how it's going and a way to
 // practice just that topic. "Edit" lets the student rename, drop, reorder and
 // add topics — the map is theirs, not Polya's.
-export default function TopicMap({ examId, topics, progress, onChange, onPractice }: Props) {
+export default function TopicMap({ examId, topics, progress, onChange, onPractice, badge }: Props) {
   const [editing, setEditing] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -153,11 +155,15 @@ export default function TopicMap({ examId, topics, progress, onChange, onPractic
                   </span>
                 ) : (
                   <>
-                    <span
-                      className={`shrink-0 rounded px-2 py-[3px] text-[10px] font-[650] uppercase tracking-[0.07em] ${TOPIC_STATUS_CLASS[status]}`}
-                    >
-                      {TOPIC_STATUS_LABEL[status]}
-                    </span>
+                    {badge ? (
+                      badge(topic)
+                    ) : (
+                      <span
+                        className={`shrink-0 rounded px-2 py-[3px] text-[10px] font-[650] uppercase tracking-[0.07em] ${TOPIC_STATUS_CLASS[status]}`}
+                      >
+                        {TOPIC_STATUS_LABEL[status]}
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => onPractice(topic.id)}
