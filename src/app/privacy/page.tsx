@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import ProsePage from "@/components/marketing/ProsePage";
-import { contactEmail, defaultOpenGraph } from "@/lib/seo";
+import { contactEmail, defaultOpenGraph, ownerName } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Privacy",
@@ -21,11 +21,22 @@ export const metadata: Metadata = {
 // products). Keep billing on, or change that sentence.
 export default function PrivacyPage() {
   return (
-    <ProsePage title="Privacy" updated="October 3, 2026">
+    <ProsePage title="Privacy" updated="October 19, 2026">
       <p>
         Polya exists to help you learn from your own course materials. This
         page explains, in plain language, what Polya stores, who helps us run
         it, how long we keep it, and how to remove it.
+      </p>
+
+      <h2>Who is responsible for your data</h2>
+      <p>
+        Polya is owned and operated by {ownerName}, an individual developer
+        and the founder of Scope. Polya is not run by a company. {ownerName}{" "}
+        decides how the information on this page is used and is responsible
+        for it (in privacy-law terms, the data controller). On this page,
+        &quot;we&quot; and &quot;us&quot; mean {ownerName}. For any privacy
+        question, write to{" "}
+        <a href={`mailto:${contactEmail}`}>{contactEmail}</a>.
       </p>
 
       <h2>What Polya stores</h2>

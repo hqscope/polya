@@ -8,7 +8,9 @@
 > per-course assistance policy (Open, Guided, Practice, or Review) that
 > visibly governs how much Polya reveals.
 
-Polya is built by Canvascope Inc. and named for George Pólya, whose book
+Polya is created, owned, and operated by Noel Sason, an individual developer
+and the founder of Scope (https://www.canvascope.org; personal site
+https://noelsason.com). It is named for George Pólya, whose book
 How to Solve It taught teaching-by-questions. It is free to start: students
 sign in with Google and connect their school's Canvas.
 
@@ -18,6 +20,7 @@ sign in with Google and connect their school's Canvas.
 - [How Polya works](https://askpolya.com/how-it-works): the full student walkthrough — connecting a course, citations, and the help ladder
 - [For instructors](https://askpolya.com/for-instructors): the per-course assistance policies and how they govern Polya
 - [Sign in](https://askpolya.com/login): Google sign-in for students
+- [About](https://askpolya.com/about): who owns and runs Polya
 - [Privacy](https://askpolya.com/privacy): how Polya handles accounts, Canvas connections, and course materials
 - [Terms](https://askpolya.com/terms): the terms that govern use of Polya
 - [Contact](https://askpolya.com/contact): how to reach the team

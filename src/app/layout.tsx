@@ -1,7 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import { Instrument_Sans } from "next/font/google";
 
-import { defaultOpenGraph, orgName, siteDescription, siteUrl } from "@/lib/seo";
+import {
+  defaultOpenGraph,
+  OWNER_SITE_URL,
+  ownerName,
+  siteDescription,
+  siteUrl,
+} from "@/lib/seo";
 
 import "./globals.css";
 
@@ -15,8 +21,9 @@ export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   applicationName: "Polya",
   category: "education",
-  creator: orgName,
-  publisher: orgName,
+  authors: [{ name: ownerName, url: OWNER_SITE_URL }],
+  creator: ownerName,
+  publisher: ownerName,
   title: {
     default: "Polya — AI study help that teaches",
     template: "%s | Polya",

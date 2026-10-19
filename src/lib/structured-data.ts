@@ -4,28 +4,28 @@
 
 import type { FaqItem } from "@/lib/content/faq";
 import {
-  absoluteUrl,
   contactEmail,
   landingDescription,
-  orgName,
+  OWNER_SITE_URL,
+  ownerName,
   siteName,
   siteUrl,
 } from "@/lib/seo";
 
 type SchemaNode = Record<string, unknown>;
 
-const organizationId = `${siteUrl}/#organization`;
+const ownerId = `${siteUrl}/#owner`;
 const websiteId = `${siteUrl}/#website`;
 
-function organization(): SchemaNode {
+// Polya is run by an individual, not a company, so the publisher is a Person.
+function owner(): SchemaNode {
   return {
-    "@type": "Organization",
-    "@id": organizationId,
-    name: orgName,
-    url: siteUrl,
+    "@type": "Person",
+    "@id": ownerId,
+    name: ownerName,
+    url: OWNER_SITE_URL,
     email: contactEmail,
     brand: { "@type": "Brand", name: siteName },
-    logo: { "@type": "ImageObject", url: absoluteUrl("/icon.svg") },
   };
 }
 
@@ -35,7 +35,7 @@ function website(): SchemaNode {
     "@id": websiteId,
     url: siteUrl,
     name: siteName,
-    publisher: { "@id": organizationId },
+    publisher: { "@id": ownerId },
   };
 }
 
@@ -48,7 +48,7 @@ function softwareApplication(): SchemaNode {
     applicationCategory: "EducationalApplication",
     operatingSystem: "Web",
     offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-    publisher: { "@id": organizationId },
+    publisher: { "@id": ownerId },
   };
 }
 
@@ -68,6 +68,6 @@ function faqPage(faq: readonly FaqItem[]): SchemaNode {
 export function buildLandingGraph(faq: readonly FaqItem[]): SchemaNode {
   return {
     "@context": "https://schema.org",
-    "@graph": [organization(), website(), softwareApplication(), faqPage(faq)],
+    "@graph": [owner(), website(), softwareApplication(), faqPage(faq)],
   };
 }

@@ -18,8 +18,11 @@ export const siteUrl =
   normalizeSiteUrl(process.env.NEXT_PUBLIC_SITE_URL) || "https://askpolya.com";
 
 export const siteName = "Polya";
-// Legal entity name: keep as registered until Noel confirms a rename (POLISH Needs Noel).
-export const orgName = "Canvascope Inc.";
+// Polya's owner and operator. There is no incorporated entity: Noel Sason runs
+// Polya as an individual, and this must match the identity verified with
+// OpenAI for the ChatGPT plugin. Don't name a company here until one exists.
+export const ownerName = "Noel Sason";
+export const OWNER_SITE_URL = "https://noelsason.com";
 export const contactEmail = "hello@askpolya.com";
 
 // Scope's own marketing site — Polya is one of its products, not a separate
@@ -41,6 +44,7 @@ export const PUBLIC_PATHS = [
   "/how-it-works",
   "/for-instructors",
   "/login",
+  "/about",
   "/privacy",
   "/terms",
   "/contact",

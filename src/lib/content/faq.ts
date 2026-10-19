@@ -2,7 +2,7 @@
 // FAQPage JSON-LD in structured-data.ts, so the two can never drift apart.
 // Questions are phrased the way students actually search.
 
-import { orgName } from "@/lib/seo";
+import { ownerName } from "@/lib/seo";
 
 export interface FaqItem {
   question: string;
@@ -48,6 +48,6 @@ export const FAQ_ITEMS: FaqItem[] = [
   {
     question: "Who made Polya?",
     answer:
-      `Polya is built by ${orgName} and named for George Pólya, the mathematician whose book How to Solve It taught generations how to work through problems step by step.`,
+      `Polya is built and run by ${ownerName}, the founder of Scope. It's named for George Pólya, the mathematician whose book How to Solve It taught generations how to work through problems step by step.`,
   },
 ];

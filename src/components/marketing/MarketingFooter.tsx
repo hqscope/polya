@@ -1,11 +1,12 @@
 import Link from "next/link";
 
 import Logo from "@/components/Logo";
-import { orgName, SCOPE_SITE_URL } from "@/lib/seo";
+import { ownerName, SCOPE_SITE_URL } from "@/lib/seo";
 
 const FOOTER_LINKS = [
   { href: "/how-it-works", label: "How it works" },
   { href: "/for-instructors", label: "For instructors" },
+  { href: "/about", label: "About" },
   { href: "/privacy", label: "Privacy" },
   { href: "/terms", label: "Terms" },
   { href: "/contact", label: "Contact" },
@@ -34,7 +35,10 @@ export default function MarketingFooter() {
           Polya — course-aware AI tutoring for your Canvas classes.
         </span>
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <span className="text-[12px] text-ink3">© 2026 {orgName}</span>
+          <span className="text-[12px] text-ink3">
+            © 2026 {ownerName}. Polya is built and operated by {ownerName}{" "}
+            (Scope).
+          </span>
           <span className="text-[12px] text-ink3">
             Named for George Pólya, who taught the world how to solve it.
           </span>

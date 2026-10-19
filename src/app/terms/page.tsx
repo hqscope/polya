@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import ProsePage from "@/components/marketing/ProsePage";
-import { contactEmail, defaultOpenGraph, orgName } from "@/lib/seo";
+import { contactEmail, defaultOpenGraph, ownerName } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Terms",
@@ -13,10 +13,17 @@ export const metadata: Metadata = {
 // Working draft — have it reviewed before treating it as legal advice.
 export default function TermsPage() {
   return (
-    <ProsePage title="Terms of service" updated="July 17, 2026">
+    <ProsePage title="Terms of service" updated="October 19, 2026">
       <p>
-        These terms govern your use of Polya, a service of {orgName}. By
-        signing in, you agree to them.
+        These terms govern your use of Polya. By signing in, you agree to
+        them.
+      </p>
+
+      <h2>Who runs Polya</h2>
+      <p>
+        Polya is owned and operated by {ownerName}, an individual developer
+        and the founder of Scope. Polya is not run by a company. In these
+        terms, &quot;we&quot; and &quot;us&quot; mean {ownerName}.
       </p>
 
       <h2>The service</h2>
@@ -60,7 +67,7 @@ export default function TermsPage() {
       <h2>Disclaimers</h2>
       <p>
         Polya is provided &quot;as is.&quot; To the fullest extent the law
-        allows, {orgName} disclaims warranties and limits its liability
+        allows, {ownerName} disclaims warranties and limits liability
         arising from your use of the service.
       </p>
 

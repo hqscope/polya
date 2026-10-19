@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 
 import ProsePage from "@/components/marketing/ProsePage";
-import { contactEmail, defaultOpenGraph, orgName } from "@/lib/seo";
+import { contactEmail, defaultOpenGraph, ownerName } from "@/lib/seo";
 
 export const metadata: Metadata = {
   title: "Contact",
-  description: `Get in touch with the Polya team at ${orgName}.`,
+  description: `Get in touch with ${ownerName}, who builds and runs Polya.`,
   alternates: { canonical: "/contact" },
   openGraph: { ...defaultOpenGraph, url: "/contact" },
 };
@@ -13,7 +13,10 @@ export const metadata: Metadata = {
 export default function ContactPage() {
   return (
     <ProsePage title="Contact">
-      <p>Questions, problems, or ideas — we read everything.</p>
+      <p>
+        Polya is built and run by {ownerName}. Questions, problems, or ideas —
+        we read everything.
+      </p>
 
       <h2>Email</h2>
       <p>

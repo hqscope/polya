@@ -4,7 +4,7 @@ What ships in the repo: full metadata (canonicals, Open Graph + generated OG
 image, Twitter card), `robots.txt`, `sitemap.xml`, web manifest, JSON-LD
 structured data (Organization / WebSite / SoftwareApplication / FAQPage),
 `llms.txt` for AI answer engines, an IndexNow key + ping script, and the
-public pages (`/`, `/how-it-works`, `/for-instructors`, `/login`, `/privacy`,
+public pages (`/`, `/how-it-works`, `/for-instructors`, `/login`, `/about`, `/privacy`,
 `/terms`, `/contact`). Everything derives its URLs from
 `NEXT_PUBLIC_SITE_URL` (fallback `https://askpolya.com`) via `src/lib/seo.ts`
 — new public pages must be added to `PUBLIC_PATHS` there.
