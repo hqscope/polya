@@ -1,14 +1,27 @@
 // The check-in loop as one call, shared by the eve schedule (schedules/check-ins.ts) and the
 // manual trigger route (channels/check-ins.ts). Each check-in is handed to the student's iMessage
 // thread, where the agent writes the actual text (instructions/check-ins.md). After the check-ins,
-// the same run texts students whose Gradescope or Canvas connection stopped working (reconnect.ts).
+// the same run texts students whose Gradescope or Canvas connection stopped working (reconnect.ts),
+// then runs Noel's personal digest, which only ever reads and texts the hub owner (hub-digest.ts).
 import type { SessionAuthContext } from "eve/context";
 import type { ScheduleToFn } from "eve/schedules";
 
 import photon from "../channels/photon.ts";
 import { claimCheckIn, loadCheckInLinks, releaseCheckIns } from "./check-ins-db.ts";
 import { processCheckIns, type CheckInRunCounts } from "./check-ins-runner.ts";
+import { collectHubSnapshot } from "./hub-digest.ts";
+import {
+  claimHubItems,
+  loadBriefAssignments,
+  loadDigestSends,
+  loadHubOwnerLink,
+  loadHubSeen,
+  releaseHubItems,
+} from "./hub-digest-db.ts";
+import { processHubDigest, type HubDigestCounts } from "./hub-digest-runner.ts";
 import { appUrl } from "./link.ts";
+import { hubOwner } from "./noel-hub.ts";
+import { withHubReader } from "./noel-hub-client.ts";
 import { processReconnectNotices, type ReconnectRunCounts } from "./reconnect.ts";
 import {
   claimReconnectNotice,
@@ -25,10 +38,12 @@ export type { CheckInRunCounts } from "./check-ins-runner.ts";
 export interface LoopRunCounts extends CheckInRunCounts {
   /** The reconnect pass, or null when it failed as a whole (the check-ins still ran). */
   reconnect: ReconnectRunCounts | null;
+  /** Noel's personal digest, or null when it failed as a whole. Counts only, never content. */
+  digest: HubDigestCounts | null;
 }
 
 /** Who a loop-started turn runs as. */
-export type LoopPrincipal = "polya-check-ins" | "polya-reconnect";
+export type LoopPrincipal = "polya-check-ins" | "polya-reconnect" | "polya-digest";
 
 /**
  * The principal a loop-started turn runs as: the loop itself, carrying the student's Polya user id
@@ -99,5 +114,32 @@ export async function runCheckIns(to: ScheduleToFn, now: Date): Promise<LoopRunC
     return null;
   });
 
-  return { ...checkIns, reconnect };
+  // Last, so a slow hub never delays students' check-ins. hubOwner() is null unless the hub is
+  // fully configured, and the pass only ever loads the owner's own link.
+  const digest = await processHubDigest(
+    {
+      hub: hubOwner(),
+      loadOwnerLink: loadHubOwnerLink,
+      loadDigestSends,
+      loadSeen: loadHubSeen,
+      claim: claimHubItems,
+      release: releaseHubItems,
+      collect: (hub, request) =>
+        withHubReader(hub, (reader) => collectHubSnapshot(reader, request)).catch((error: unknown) => {
+          // The transport's message can echo the hub's response; keep only the error's name.
+          throw new Error(`couldn't reach the hub (${error instanceof Error ? error.name : "unknown error"})`);
+        }),
+      loadAssignments: loadBriefAssignments,
+      send: (threadId, userId, message) => handToStudent(to, threadId, userId, message, "polya-digest"),
+      logError(message, details) {
+        console.error(`[polya digest] ${message}`, details);
+      },
+    },
+    now,
+  ).catch((error: unknown) => {
+    console.error("[polya digest] run failed", error instanceof Error ? error.message : error);
+    return null;
+  });
+
+  return { ...checkIns, reconnect, digest };
 }

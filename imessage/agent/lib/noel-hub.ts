@@ -32,6 +32,21 @@ export const HUB_READ_TOOLS = [
   "hpc_clusters", "hpc_status", "hpc_jobs", "hpc_job", "hpc_logs", "hpc_files",
 ] as const;
 
+export type HubReadTool = (typeof HUB_READ_TOOLS)[number];
+
+/**
+ * The only tools the personal digest (hub-digest.ts) calls from code. A subset of the read
+ * allowlist, checked by the compiler here and again at call time (noel-hub-client.ts).
+ */
+export const DIGEST_HUB_TOOLS = [
+  "hub_connections",
+  "gmail_search",
+  "canvas_announcements",
+  "calendar_list_events",
+] as const satisfies readonly HubReadTool[];
+
+export type DigestHubTool = (typeof DIGEST_HUB_TOOLS)[number];
+
 export interface HubConfig {
   url: string;
   token: string;
@@ -45,4 +60,9 @@ export function hubFor(studentId: string | undefined, env: Readonly<Record<strin
   if (!ownerId || !token || token.length < 32 || !studentId || studentId !== ownerId) return null;
   const url = (env.NOEL_HUB_URL?.trim() || "https://mcp.noelsason.com/mcp").replace(/\/+$/, "");
   return url.startsWith("https://") ? { url, token, ownerId } : null;
+}
+
+/** The hub as its owner would get it in a turn, or null until it's fully configured. For the digest loop. */
+export function hubOwner(env: Readonly<Record<string, string | undefined>> = process.env): HubConfig | null {
+  return hubFor(env.NOEL_HUB_POLYA_USER_ID?.trim(), env);
 }

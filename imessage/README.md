@@ -50,6 +50,7 @@ Names only; see `.env.example`. Never commit values.
 | `GRADESCOPE_SECRET_KEY` | Seals stored Gradescope sessions and passwords (32 bytes, base64) |
 | `GEMINI_API_KEY` | Query embeddings for course search, if search uses them |
 | `POLYA_IMESSAGE_DAILY_REPLY_CAP` | Replies per student per UTC day, default 60 |
+| `NOEL_HUB_URL`, `NOEL_HUB_TOKEN`, `NOEL_HUB_POLYA_USER_ID` | Noel's personal hub (read-only MCP) in his own conversation, and his personal digest. Unset turns both off |
 
 ## How a message is handled
 
@@ -90,6 +91,16 @@ When a student's Gradescope sign-in or Canvas connection stops working, the chec
 - At most one text per service per 24 hours while it stays broken, same students and quiet hours as check-ins. `polya_imessage_reconnect_notices` records each text and is claimed before sending; a row is deleted once the service works again or the student reconnects. Until that table exists (`supabase/migrations/20261016034944_polya_imessage_reconnect_notices.sql`), nothing is texted.
 - Students can ask for the link any time (`reconnect_link`).
 - The web page signs students in through `POST /polya/gradescope/connect` (`lib/gradescope/connect.ts` documents the request and response shapes). A successful connect clears the notice and hands `[polya reconnect]` with `status: reconnected` to the student's thread.
+
+## Personal digest (hub owner only)
+
+The check-in run ends with a pass for one account: the hub owner (`NOEL_HUB_POLYA_USER_ID`), and only while that account has a thread and check-ins on (`lib/hub-digest*.ts`). It never loads anyone else's link.
+
+- **Reads, in code, read tools only:** `hub_connections` (which Google accounts), `gmail_search` (`is:unread in:inbox newer_than:2d` minus the promotions, social, updates, and forums categories, 10 per account), `canvas_announcements` (last 48 hours), and `calendar_list_events` (next 3 hours). `lib/noel-hub-client.ts` refuses any tool outside `DIGEST_HUB_TOOLS`. Only sender, subject, time, and a snippet of at most 200 characters reach the hand-off; nothing from the hub is logged.
+- **Digest:** new items go to the owner's thread as one `[polya digest]` hand-off, fenced as data. The agent texts only what matters or calls `no_reply` (`instructions/check-ins.md`). Calendar events are digested once, while they start within 60 minutes. At most 6 digests per local day.
+- **Morning brief:** the first run from 8:00 local, outside quiet hours and before noon, hands off `[polya morning brief]` instead: events left today, assignments due in 3 days that aren't done (the `upcoming_assignments` loader), and new mail and announcements. It claims those items so the digest doesn't repeat them, and doesn't count against the 6.
+- **Dedupe:** `polya_imessage_hub_seen` (`supabase/migrations/20261020195214_polya_imessage_hub_seen.sql`) holds `gmail:<id>`, `canvas:<announcement id>`, `cal:<event id>:<start>`, `brief:<date>`, and one `digest:sent:<time>` row per digest (the daily cap counts those). Keys are claimed before the hand-off and released if it fails. Until the table exists, the pass reads nothing and logs that once per process.
+- Quiet hours and "pause check-ins" apply to the digest and the brief too.
 
 ## Run locally
 

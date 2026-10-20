@@ -59,7 +59,7 @@ export async function loadCheckInLinks(): Promise<CheckInLink[]> {
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await serviceDb()
       .from("polya_imessage_links")
-      .select("user_id, thread_id, timezone, check_ins_enabled, quiet_start, quiet_end")
+      .select(LINK_COLUMNS)
       .eq("check_ins_enabled", true)
       .not("thread_id", "is", null)
       .order("user_id", { ascending: true })
@@ -68,19 +68,28 @@ export async function loadCheckInLinks(): Promise<CheckInLink[]> {
 
     const rows = data ?? [];
     for (const raw of rows) {
-      const row = linkRow.safeParse(raw);
-      if (!row.success) continue;
-      links.push({
-        userId: row.data.user_id,
-        threadId: row.data.thread_id,
-        timezone: row.data.timezone,
-        checkInsEnabled: row.data.check_ins_enabled,
-        quietStart: row.data.quiet_start,
-        quietEnd: row.data.quiet_end,
-      });
+      const link = parseLinkRow(raw);
+      if (link) links.push(link);
     }
     if (rows.length < PAGE_SIZE) return links;
   }
+}
+
+/** The polya_imessage_links columns the loops read (never the handle). */
+export const LINK_COLUMNS = "user_id, thread_id, timezone, check_ins_enabled, quiet_start, quiet_end";
+
+/** One polya_imessage_links row selected with LINK_COLUMNS, or null when it doesn't parse. */
+export function parseLinkRow(raw: unknown): CheckInLink | null {
+  const row = linkRow.safeParse(raw);
+  if (!row.success) return null;
+  return {
+    userId: row.data.user_id,
+    threadId: row.data.thread_id,
+    timezone: row.data.timezone,
+    checkInsEnabled: row.data.check_ins_enabled,
+    quietStart: row.data.quiet_start,
+    quietEnd: row.data.quiet_end,
+  };
 }
 
 /**
