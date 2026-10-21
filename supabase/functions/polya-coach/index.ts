@@ -488,7 +488,8 @@ async function loadContext(
       .eq("exam_id", exam.id)
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
-      .limit(1_000),
+      // Same rows as the exam page, so the exam-ready gate matches what the student sees.
+      .limit(2_000),
     service
       .from("polya_study_errors")
       .select("id, topic_id, what, why, fix, created_at")
@@ -554,6 +555,7 @@ async function loadContext(
       stage: info.stage,
       accuracy: info.progress.accuracy,
       attempts: info.progress.attempts,
+      firstTries: info.progress.firstTries,
       lastAttemptAt: info.lastAttemptAt,
     };
   });

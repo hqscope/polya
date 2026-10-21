@@ -46,6 +46,7 @@ const state = (over: Partial<ExamStateInput> = {}): ExamStateInput => ({
       stage: "practicing",
       accuracy: 0.5,
       attempts: 4,
+      firstTries: 2,
       lastAttemptAt: "2026-10-19T20:00:00Z",
     },
   ],
@@ -61,7 +62,7 @@ const state = (over: Partial<ExamStateInput> = {}): ExamStateInput => ({
 test("exam state numbers topics and mistakes, counts days from the student's today", () => {
   const block = examStateBlock(state());
   assert.match(block, /Exam date: 2026-10-26 \(in 6 days\)/);
-  assert.match(block, /T1\. Chebyshev — practicing; 50% recently over 4 answered; last practiced yesterday/);
+  assert.match(block, /T1\. Chebyshev — practicing; 50% recently over 4 answered, 2 first tries; last practiced yesterday/);
   assert.match(block, /E1 \[T1\]\. Read X>20 as X≥20/);
   assert.match(block, /<exam_scope>\nLectures 1-20\.\n<\/exam_scope>/);
   assert.equal(daysBetween("2026-10-20", "2026-10-21"), 1);

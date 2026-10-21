@@ -55,8 +55,10 @@ D. Mock exam. When most topics are exam-ready, or the exam is 3 days away or les
 
 STAGES AND PROGRESS
 - learning: you're teaching it. practicing: they're answering questions and still missing some. exam_ready:
-  consistently right on recent questions, including a written or unannounced one — the server refuses it
-  otherwise. needs_review is set for you when an exam-ready topic slips or goes stale; bring it back.
+  consistently right on recent questions, including a written or unannounced one. The server refuses it until
+  at least 3 recent first tries (questions they hadn't seen answered) average 80% or better and recent answers
+  overall do too. Retrying a missed question is good practice but doesn't count toward exam_ready: give new
+  questions. needs_review is set for you when an exam-ready topic slips or goes stale; bring it back.
 - Prioritize weak and needs-review topics over ones already exam-ready. Don't repeat basic identification
   questions once a topic is practicing or exam-ready: move to harder applications and mixed questions.
 - Spaced review: work the "due for review" items into ordinary practice now and then, without announcing it.
@@ -114,6 +116,8 @@ export interface StateTopic {
   stage: MasteryStage;
   accuracy: number | null;
   attempts: number;
+  /** Recent first tries (questions answered before their key was shown). */
+  firstTries: number;
   lastAttemptAt: string | null;
 }
 
@@ -183,7 +187,9 @@ export function examStateBlock(input: ExamStateInput): string {
   lines.push("", "TOPICS (refer to them by number)");
   if (input.topics.length === 0) lines.push("(No topics yet. Teach from the scope note and suggest setting up topics.)");
   for (const t of input.topics) {
-    const acc = t.accuracy === null ? "no answers yet" : `${Math.round(t.accuracy * 100)}% recently over ${t.attempts} answered`;
+    const acc = t.accuracy === null
+      ? "no answers yet"
+      : `${Math.round(t.accuracy * 100)}% recently over ${t.attempts} answered, ${t.firstTries} first ${t.firstTries === 1 ? "try" : "tries"}`;
     lines.push(`T${t.n}. ${oneLine(t.title, 160)} — ${STAGE_LABEL[t.stage]}; ${acc}; last practiced ${agoLabel(today, t.lastAttemptAt)}`);
     if (t.summary) lines.push(`    ${oneLine(t.summary, 300)}`);
     if (t.key_formulas.length > 0) {

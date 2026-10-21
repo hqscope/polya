@@ -22,7 +22,7 @@ function question(id: string, topic_id: string, at = ago(48 * HOUR), status = "a
 }
 
 test("topic status follows recent accuracy", () => {
-  assert.deepEqual(topicProgress([]), { status: "not_started", attempts: 0, accuracy: null });
+  assert.deepEqual(topicProgress([]), { status: "not_started", attempts: 0, accuracy: null, firstTries: 0 });
   assert.equal(topicProgress([attempt("q", "t", 0, ago(1)), attempt("q", "t", 0.5, ago(2))]).status, "shaky");
   assert.equal(topicProgress([attempt("q", "t", 1, ago(1)), attempt("q", "t", 1, ago(2))]).status, "getting_there", "2 is too few to be solid");
   assert.equal(
@@ -39,6 +39,57 @@ test("topic status follows recent accuracy", () => {
     ...Array.from({ length: 6 }, (_, i) => attempt(`o${i}`, "t", 0, ago(100 + i))),
   ];
   assert.equal(topicProgress(recovered).status, "solid");
+});
+
+test("right answers on retries don't make a topic solid; new questions do", () => {
+  // Missed a, then got it right four times after seeing its key: 83% recently, 2 first tries.
+  const retried = [
+    attempt("a", "t", 0, ago(50 * HOUR)),
+    attempt("b", "t", 1, ago(49 * HOUR)),
+    ...[4, 3, 2, 1].map((h) => attempt("a", "t", 1, ago(h * HOUR))),
+  ];
+  const progress = topicProgress(retried);
+  assert.equal(progress.accuracy! >= 0.8, true);
+  assert.equal(progress.firstTries, 2);
+  assert.equal(progress.status, "getting_there");
+  assert.equal(canMarkExamReady(progress), false);
+
+  // Three first tries at 67%, lifted to 83% overall by right retries of c: still not solid.
+  const weakFirsts = [
+    attempt("a", "t", 1, ago(50 * HOUR)),
+    attempt("b", "t", 1, ago(49 * HOUR)),
+    attempt("c", "t", 0, ago(48 * HOUR)),
+    ...[5, 4, 3].map((h) => attempt("c", "t", 1, ago(h * HOUR))),
+  ];
+  assert.equal(topicProgress(weakFirsts).status, "getting_there");
+  // Two new questions right on the first try bring first tries to 80%.
+  const proven = [...weakFirsts, attempt("d", "t", 1, ago(2 * HOUR)), attempt("e", "t", 1, ago(HOUR))];
+  assert.deepEqual(topicProgress(proven), { status: "solid", attempts: 8, accuracy: 5 / 6, firstTries: 5 });
+});
+
+test("a missed first try still counts after it ages out of the recent answers", () => {
+  const attempts = [
+    attempt("old", "t", 0, ago(200 * HOUR)),
+    ...[10, 9, 8, 7, 6, 5, 4].map((h) => attempt("old", "t", 1, ago(h * HOUR))),
+    attempt("n0", "t", 1, ago(2 * HOUR)),
+    attempt("n1", "t", 1, ago(HOUR)),
+  ];
+  const progress = topicProgress(attempts);
+  assert.equal(progress.accuracy, 1, "the latest six are all right");
+  assert.equal(progress.firstTries, 3);
+  assert.equal(progress.status, "getting_there");
+});
+
+test("practice keeps a retried-right topic in play and writes new questions for it", () => {
+  const twoTopics = [{ id: "t1", position: 0 }, { id: "t2", position: 1 }];
+  const attempts = [
+    attempt("q1", "t1", 0, ago(60 * HOUR)),
+    ...[30, 29, 28, 27].map((h) => attempt("q1", "t1", 1, ago(h * HOUR))),
+    ...["b1", "b2", "b3"].map((id, i) => attempt(id, "t2", 1, ago((10 - i) * HOUR))),
+  ];
+  const questions = [question("q1", "t1"), ...["b1", "b2", "b3", "b4"].map((id) => question(id, "t2"))];
+  assert.equal(topicProgress(attempts.filter((a) => a.topic_id === "t2")).status, "solid");
+  assert.deepEqual(pickNext({ topics: twoTopics, questions, attempts, now: NOW }), { kind: "write", topicId: "t1" });
 });
 
 const topics = [
@@ -147,6 +198,16 @@ test("a mixed question counts toward every topic it covered", () => {
   );
   assert.equal(progress.get("a")!.attempts, 1);
   assert.equal(progress.get("b")!.attempts, 1);
+
+  const retried = progressByTopic(
+    [{ id: "a", position: 0 }, { id: "b", position: 1 }],
+    [
+      { question_id: "q", topic_id: "a", topic_ids: ["a", "b"], score: 0, all_correct: false, created_at: ago(30 * HOUR) },
+      { question_id: "q", topic_id: "a", topic_ids: ["a", "b"], score: 1, all_correct: true, created_at: ago(HOUR) },
+    ],
+  );
+  assert.equal(retried.get("a")!.firstTries, 1, "the retry isn't a first try in either topic");
+  assert.equal(retried.get("b")!.firstTries, 1);
 });
 
 test("practice never serves questions the coach wrote mid-conversation", () => {

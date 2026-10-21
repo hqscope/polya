@@ -272,7 +272,7 @@ export function validateToolInput(name: string, input: unknown, ctx: ToolContext
       }
       if (stage === "exam_ready" && !ctx.canMarkExamReady(topic.id)) {
         return fail(
-          `T${topic.n} isn't exam-ready yet: it needs at least 3 recent answers averaging 80% or better. Keep it at practicing and give more questions.`,
+          `T${topic.n} isn't exam-ready yet: it needs at least 3 recent questions answered on the first try averaging 80% or better, and recent answers averaging 80% or better. Keep it at practicing and give new questions.`,
         );
       }
       return {

@@ -7,6 +7,8 @@ export type TopicStatus = "not_started" | "shaky" | "getting_there" | "solid";
 
 /** How many of a topic's latest attempts decide its status. */
 export const RECENT_ATTEMPTS = 6;
+/** Solid needs at least this many recent first tries: right answers on retries don't prove it. */
+export const MIN_FIRST_TRIES = 3;
 /** A missed question comes back after this long — spaced, not immediate. */
 export const RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -45,18 +47,42 @@ export interface TopicProgress {
   attempts: number;
   /** Mean score over the latest RECENT_ATTEMPTS attempts, 0–1; null before any. */
   accuracy: number | null;
+  /** Recent first tries counted toward solid, at most RECENT_ATTEMPTS. */
+  firstTries: number;
 }
 
 const byNewest = (a: { created_at: string }, b: { created_at: string }) =>
   Date.parse(b.created_at) - Date.parse(a.created_at);
 
+const meanScore = (attempts: readonly ProgressAttempt[]) =>
+  attempts.reduce((sum, attempt) => sum + attempt.score, 0) / attempts.length;
+
+/**
+ * Each question's earliest attempt, newest first. A question's first attempt
+ * is the only one made before its answer was shown.
+ */
+function firstTriesOf(newestFirst: readonly ProgressAttempt[]): ProgressAttempt[] {
+  const first = new Map<string, ProgressAttempt>();
+  for (const attempt of [...newestFirst].reverse()) {
+    if (!first.has(attempt.question_id)) first.set(attempt.question_id, attempt);
+  }
+  return [...first.values()].reverse();
+}
+
+/**
+ * Misses always count; right answers count toward solid only on a first try.
+ * A missed question that comes back right after its key was shown is good
+ * practice, but solid also needs MIN_FIRST_TRIES recent first tries at 80%+.
+ */
 export function topicProgress(attempts: readonly ProgressAttempt[]): TopicProgress {
-  if (attempts.length === 0) return { status: "not_started", attempts: 0, accuracy: null };
-  const recent = [...attempts].sort(byNewest).slice(0, RECENT_ATTEMPTS);
-  const accuracy = recent.reduce((sum, attempt) => sum + attempt.score, 0) / recent.length;
-  const status: TopicStatus =
-    accuracy < 0.5 ? "shaky" : accuracy >= 0.8 && recent.length >= 3 ? "solid" : "getting_there";
-  return { status, attempts: attempts.length, accuracy };
+  if (attempts.length === 0) return { status: "not_started", attempts: 0, accuracy: null, firstTries: 0 };
+  const newest = [...attempts].sort(byNewest);
+  const recent = newest.slice(0, RECENT_ATTEMPTS);
+  const accuracy = meanScore(recent);
+  const firsts = firstTriesOf(newest).slice(0, RECENT_ATTEMPTS);
+  const solid = accuracy >= 0.8 && firsts.length >= MIN_FIRST_TRIES && meanScore(firsts) >= 0.8;
+  const status: TopicStatus = accuracy < 0.5 ? "shaky" : solid ? "solid" : "getting_there";
+  return { status, attempts: attempts.length, accuracy, firstTries: firsts.length };
 }
 
 export function progressByTopic(

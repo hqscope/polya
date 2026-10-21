@@ -116,7 +116,7 @@ export const STAGE_HINT: Record<MasteryStage, string> = {
   not_started: "Not started yet",
   learning: "Learning: getting the ideas down",
   practicing: "Practicing: answering questions, still missing some",
-  exam_ready: "Exam-ready: right on recent questions without help",
+  exam_ready: "Exam-ready: right on recent questions the first time you saw them",
   needs_review: "Needs review: it's been a while, or recent answers slipped",
 };
 
