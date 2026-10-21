@@ -233,9 +233,19 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown, max: number): string | null => {
   if (typeof value !== "string") return null;
-  const trimmed = value.replace(/\r\n?/g, "\n").trim();
+  const trimmed = unescapeUnicode(value.replace(/\r\n?/g, "\n")).trim();
   return trimmed && trimmed.length <= max ? trimmed : null;
 };
+
+// The model sometimes double-escapes non-ASCII inside tool input, so "—" arrives
+// as the six characters — and would show up that way in the plan. Turn
+// each \uXXXX back into the character it names. Only exactly four hex digits
+// match, so TeX commands like \underline or \upsilon are left alone.
+const ESCAPED_UNICODE = /\\u([0-9a-fA-F]{4})/g;
+
+export function unescapeUnicode(value: string): string {
+  return value.replace(ESCAPED_UNICODE, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
 
 const DIFFICULTY: Record<string, 1 | 2 | 3> = { warm_up: 1, standard: 2, exam_hard: 3 };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

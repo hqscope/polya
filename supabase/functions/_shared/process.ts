@@ -44,8 +44,10 @@ import { newDriveReader } from "./drive-grant-store.ts";
 import { fetchSitePageText, fetchWebPdf, WEB_ORIGINS } from "./web-sources.ts";
 import {
   looksLikePdf,
+  MAX_UPLOAD_BYTES,
   MAX_UPLOAD_PAGES,
   UPLOAD_NOT_PDF_MESSAGE,
+  UPLOAD_TOO_LARGE_MESSAGE,
   UPLOAD_TOO_MANY_PAGES_MESSAGE,
 } from "./upload-checks.ts";
 
@@ -375,11 +377,25 @@ async function advancePdf(
       (fromWeb || connection) && source.canvas_url && (!source.storage_path || refreshing);
 
     if (fetchRemote) {
+      // polya_documents refuses anything over MAX_UPLOAD_BYTES, so a bigger
+      // file can never import. Fail it before downloading: holding a 100 MB
+      // textbook runs the isolate out of memory before any failure is
+      // recorded, the lease expires, and the same file is claimed again ahead
+      // of everything queued behind it.
+      if ((source.size_bytes ?? 0) > MAX_UPLOAD_BYTES) {
+        await failSource(source.id, UPLOAD_TOO_LARGE_MESSAGE);
+        return "failed";
+      }
       const bytes = fromWeb
         ? toArrayBuffer(await fetchWebPdf(source, driveReaderFor(ctx)))
         : await new CanvasClient(connection!.base_url, connection!.access_token, {
           allowInsecure: connection!.allow_insecure,
         }).downloadFile(source.canvas_url!);
+      // Size unknown until fetched (course-website files) or misreported.
+      if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+        await failSource(source.id, UPLOAD_TOO_LARGE_MESSAGE);
+        return "failed";
+      }
       const sha = await sha256Hex(bytes);
       if (refreshing && unchangedOutput(source, sha)) {
         // Timestamp moved but bytes didn't — keep the existing units.

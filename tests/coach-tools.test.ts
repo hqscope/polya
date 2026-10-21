@@ -5,6 +5,7 @@ import {
   addDays,
   COACH_TOOLS,
   decideNext,
+  unescapeUnicode,
   validateToolInput,
   type ToolContext,
 } from "../supabase/functions/_shared/coach-tools.ts";
@@ -181,4 +182,22 @@ test("decideNext: when a turn calls the model again", () => {
   assert.equal(decideNext({ ...base, turnHasText: true, outcomes: [{ name: "save_plan", ok: true }] }), "end");
   assert.equal(decideNext({ ...base, outcomes: [{ name: "save_plan", ok: true }] }), "continue");
   assert.equal(decideNext({ ...base, callIndex: 2, outcomes: [{ name: "search_course", ok: true }] }), "end");
+});
+
+test("double-escaped characters in the coach's text come back as the characters they name", () => {
+  assert.equal(unescapeUnicode("Exam day \\u2014 light review, 15\\u201320 min"), "Exam day \u2014 light review, 15\u201320 min");
+  assert.equal(unescapeUnicode("\\underline{x} and \\upsilon stay"), "\\underline{x} and \\upsilon stay");
+  const plan = validateToolInput(
+    "save_plan",
+    {
+      days: [{ date: "2026-10-22", focus: "Exam day \\u2014 light review only", tasks: [{ topic: 0, text: "Skim your error log, 15\\u201320 min max" }] }],
+      note: "Rest first \\u2014 no cramming.",
+    },
+    ctx(),
+  );
+  assert.ok(plan.ok);
+  if (!plan.ok || plan.value.name !== "save_plan") return;
+  assert.equal(plan.value.plan.days[0]!.focus, "Exam day \u2014 light review only");
+  assert.equal(plan.value.plan.days[0]!.items[0]!.text, "Skim your error log, 15\u201320 min max");
+  assert.equal(plan.value.plan.note, "Rest first \u2014 no cramming.");
 });
