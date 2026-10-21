@@ -25,8 +25,16 @@
 // Flow: POST only -> body cap -> auth -> hourly window (fails closed) ->
 // ownership of every client-supplied id -> daily cap and AI budget before
 // each model call (both fail closed).
+//
+// Polya on iMessage (imessage/) also practices with a linked student by text.
+// It has no student session, so it names the student in x-polya-user-id and
+// authenticates with the project's service-role key, which GoTrue checks (an
+// admin lookup of that student, which only a service-role key may make). Only
+// generate_questions and submit_attempt are open to it, and every window, cap,
+// budget and ownership check applies to that student exactly as in the browser.
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { createUserClient, HttpError, requireAuthUser } from "../_shared/auth-user.ts";
+import { bearerToken } from "../_shared/service-role.ts";
 import { service } from "../_shared/service.ts";
 import { downloadFromStorage } from "../_shared/ingest.ts";
 import { retrieve } from "../_shared/retrieval.ts";
@@ -123,6 +131,11 @@ const DOC_SHEETS_MAX = 2;
 const DOC_CHARS_PER_PAGE = 9_000;
 const PAST_EXAMS_MAX = 3;
 
+// The iMessage agent's service caller (see the header) may only do these.
+const SUPABASE_URL = (globalThis as { Deno?: { env: { get(k: string): string | undefined } } })
+  .Deno?.env.get("SUPABASE_URL") ?? "";
+const SERVICE_CALLER_ACTIONS = new Set(["generate_questions", "submit_attempt"]);
+
 const SLOW_MESSAGE = "Writing questions took longer than expected. Please try again.";
 const UNAVAILABLE_MESSAGE = "Polya couldn't work on that just now. Please try again in a moment.";
 
@@ -174,6 +187,51 @@ function requireId(value: unknown, what: string): string {
   return value;
 }
 
+interface Caller {
+  id: string;
+  /** The iMessage agent acting for a linked student (service-role key), not the browser. */
+  service: boolean;
+}
+
+/** The signed-in student, or the student the iMessage agent names for an allowed action. */
+async function resolveCaller(request: Request, action: unknown): Promise<Caller> {
+  const named = request.headers.get("x-polya-user-id");
+  if (named === null) {
+    const user = await requireAuthUser(request);
+    return { id: user.id, service: false };
+  }
+  if (typeof action !== "string" || !SERVICE_CALLER_ACTIONS.has(action)) {
+    throw new HttpError("That action needs a signed-in student.", 403);
+  }
+  const id = requireId(named, "student");
+  if (!(await isServiceKeyFor(bearerToken(request), id))) throw new HttpError("Unauthorized", 401);
+  return { id, service: true };
+}
+
+/**
+ * True when `key` is this project's service-role key and `userId` is a real
+ * account: GoTrue answers an admin lookup only for a service-role key. Asking
+ * GoTrue (rather than comparing with this function's own copy of the key)
+ * accepts every valid form of the key and doesn't lean on the gateway's JWT
+ * check being on.
+ */
+async function isServiceKeyFor(key: string, userId: string): Promise<boolean> {
+  if (!key || !SUPABASE_URL) return false;
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return false;
+    }
+    const user = (await response.json().catch(() => null)) as { id?: unknown } | null;
+    return user?.id === userId;
+  } catch {
+    return false;
+  }
+}
+
 Deno.serve(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -194,7 +252,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   try {
-    const user = await requireAuthUser(request);
+    const user = await resolveCaller(request, body.action);
 
     if (!(await claimRateLimit(service, `user:${user.id}`, STUDY_HOURLY_BUCKET, STUDY_HOURLY_LIMIT, HOUR_SECONDS))) {
       return rateLimitedResponse({
@@ -209,7 +267,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       case "generate_questions":
         return await generateQuestions(
           request,
-          user.id,
+          user,
           requireId(body.exam_id, "exam"),
           requireId(body.topic_id, "topic"),
         );
@@ -232,6 +290,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     if (error instanceof HttpError) {
       const code = error.status === 401
         ? "unauthorized"
+        : error.status === 403
+        ? "forbidden"
         : error.status === 404
         ? "not_found"
         : error.status === 409
@@ -473,8 +533,9 @@ async function loadTopic(userId: string, examId: string, topicId: string): Promi
   return topicRow as TopicInput;
 }
 
-async function generateQuestions(request: Request, userId: string, examId: string, topicId: string): Promise<Response> {
+async function generateQuestions(request: Request, caller: Caller, examId: string, topicId: string): Promise<Response> {
   const started = Date.now();
+  const userId = caller.id;
   const exam = await loadExam(userId, examId);
   const topic = await loadTopic(userId, exam.id, topicId);
 
@@ -485,7 +546,11 @@ async function generateQuestions(request: Request, userId: string, examId: strin
     });
   }
 
-  const batch = await writeVerifiedBatch(request, userId, exam, topic, { allowWritten: false, started });
+  const batch = await writeVerifiedBatch(request, userId, exam, topic, {
+    allowWritten: false,
+    started,
+    serviceCaller: caller.service,
+  });
   if (!batch.ok) return batch.response;
   return json({ questions: batch.saved, written: batch.written, kept: batch.saved.length });
 }
@@ -512,18 +577,20 @@ async function writeVerifiedBatch(
   userId: string,
   exam: ExamRow,
   topic: TopicInput,
-  options: { allowWritten: boolean; started: number },
+  options: { allowWritten: boolean; started: number; serviceCaller?: boolean },
 ): Promise<BatchOutcome> {
   const context = await examContext(userId, exam);
 
   // Course evidence for the topic (the same retrieval as the tutor). Its
-  // query embedding is metered on the shared Gemini budget.
+  // query embedding is metered on the shared Gemini budget. The iMessage
+  // caller has no student session, so it reads through the user-scoped twins.
   const query = [topic.title, topic.summary ?? "", ...topic.key_formulas].join(" ").slice(0, 1_500);
   if ((await claimAiBudget(service, "gemini", userId, estimateEmbeddingUnits(query.length))) !== "ok") {
     return { ok: false, response: aiBusyResponse({ headers: corsHeaders }) };
   }
-  const userClient = createUserClient(request);
-  const units = await retrieve(userClient, exam.course_id, query, []);
+  const units = options.serviceCaller
+    ? await retrieve(service, exam.course_id, query, [], userId)
+    : await retrieve(createUserClient(request), exam.course_id, query, []);
   const sources: EvidenceSource[] = buildSources(units);
   const evidence = evidenceBlock(sources, units);
 

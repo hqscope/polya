@@ -9,6 +9,7 @@ import { FunctionError, invokeFunction } from "@/lib/functions";
 import { AI_BUSY_POLYA_STUDY } from "@/lib/ai-busy";
 import { useMediaQuery, WIDE_LAYOUT_QUERY } from "@/lib/use-media-query";
 import { userMessage } from "@/lib/user-message";
+import { withWriteRetry } from "@/lib/write-retry";
 import type { TutorSource } from "@/lib/sse";
 import type { AttemptRow, GradedAttempt, QuestionRow, TopicRow } from "@/lib/study";
 import { pickNext } from "../../../supabase/functions/_shared/study-progress.ts";
@@ -62,11 +63,13 @@ export default function PracticeSession({
       setWriting(true);
       setNotice(null);
       try {
-        const result = await invokeFunction<{ questions: QuestionRow[]; kept: number }>("polya-study", {
-          action: "generate_questions",
-          exam_id: examId,
-          topic_id: writeTopicId,
-        });
+        const result = await withWriteRetry(() =>
+          invokeFunction<{ questions: QuestionRow[]; kept: number }>("polya-study", {
+            action: "generate_questions",
+            exam_id: examId,
+            topic_id: writeTopicId,
+          }),
+        );
         if (result.questions.length === 0) {
           setNotice({
             tone: "warn",

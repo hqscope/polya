@@ -1,6 +1,6 @@
 # Polya on iMessage
 
-An [eve](https://eve.dev) agent that students text for classwork help. It follows the same study rules as Polya on the web: each course's mode (Open, Guided, Practice, Review) decides how much help is allowed, explanations are grounded in the student's own course materials, and it never sends a bare answer. A background loop also texts short check-ins about upcoming, newly posted, and newly graded assignments that offer to help plan, start, or review, never to do the work.
+An [eve](https://eve.dev) agent that students text for classwork help. It follows the same study rules as Polya on the web: each course's mode (Open, Guided, Practice, Review) decides how much help is allowed, explanations are grounded in the student's own course materials, and it never sends a bare answer. A background loop also texts short check-ins about upcoming, newly posted, and newly graded assignments that offer to help plan, start, or review, never to do the work, plus reminders for exams students added in Study. Students can practice for those exams by text.
 
 This is its own deployable, separate from the Polya web app and from the scope-ops iMessage agent. It has its own Photon project, its own Vercel project (Root Directory `imessage`), and its own `package.json`.
 
@@ -24,6 +24,9 @@ agent/
     search_course_materials.ts
     upcoming_assignments.ts
     check_in_settings.ts
+    exam_prep.ts           read-only: upcoming exams, topics weakest first, formulas, mistakes, plan
+    practice_question.ts   next Study practice question (may ask polya-study to write one)
+    answer_practice.ts     grades an answer through polya-study and records it
     recent_study_history.ts  read-only: the student's recent Polya web conversations
     no_reply.ts            lets a check-in turn stay silent (eve's no_reply)
     reconnect_link.ts      link to connect or reconnect Gradescope or Canvas, plus whether it works now
@@ -91,6 +94,30 @@ When a student's Gradescope sign-in or Canvas connection stops working, the chec
 - At most one text per service per 24 hours while it stays broken, same students and quiet hours as check-ins. `polya_imessage_reconnect_notices` records each text and is claimed before sending; a row is deleted once the service works again or the student reconnects. Until that table exists (`supabase/migrations/20261016034944_polya_imessage_reconnect_notices.sql`), nothing is texted.
 - Students can ask for the link any time (`reconnect_link`).
 - The web page signs students in through `POST /polya/gradescope/connect` (`lib/gradescope/connect.ts` documents the request and response shapes). A successful connect clears the notice and hands `[polya reconnect]` with `status: reconnected` to the student's thread.
+
+## Exam reminders and practice by text
+
+Students add exams in Study on the Polya website (`polya_exams`, with topics, practice questions, and attempts from `20261016211534_polya_study.sql` and `20261021023716_polya_exam_coach.sql`). The iMessage agent reads those tables and never edits an exam, topic, or plan.
+
+**Reminders** (`lib/exams.ts`, `lib/exams-runner.ts`, `lib/exams-db.ts`): the check-in run has an exam pass after the assignment check-ins. An exam with a date gets up to four texts, decided in the student's time zone and outside quiet hours:
+
+| Kind | When | What the hand-off carries |
+| --- | --- | --- |
+| `exam_week` | 4 to 7 days out, from 10 AM | topics weakest first, today's plan |
+| `exam_soon` | 2 to 3 days out, from 10 AM | topics, open mistakes, today's plan |
+| `exam_eve` | the day before, from 5 PM | topics, key formulas, open mistakes |
+| `exam_day` | the morning of, before noon | topics, key formulas, open mistakes |
+
+- At most one exam text per student per local day, most urgent exam first. The hand-off starts with `[polya exam]` (`instructions/check-ins.md`), and the agent writes the text or calls `no_reply`.
+- Each text is claimed in `polya_imessage_reminders` under `exam:<exam id>:<exam date>` before it's sent, so moving the exam date starts the milestones over. The kinds come from `supabase/migrations/20261021071045_polya_imessage_exam_reminders.sql`; until it's applied the claim fails its check (23514) and the pass sends nothing.
+- Topic stages come from `lib/study-progress.ts`, a byte-for-byte copy of `polya/supabase/functions/_shared/study-progress.ts` (`test/study-progress.test.ts` fails when they drift), so a topic reads the same in a text as on the website.
+
+**Practice by text** (`exam_prep`, `practice_question`, `answer_practice`, `lib/practice.ts`, `lib/study-api.ts`):
+
+- `practice_question` picks the next question exactly like the website's practice session (`pickNext`): weakest topic first, checked questions only, never one reserved by an unfinished mock exam. When none is left it asks `polya-study` to write a checked batch (`generate_questions`), which can take a minute or two.
+- `answer_practice` reads the texted answers (choice numbers or letters, numbers, or words) and sends them to `polya-study`'s `submit_attempt`. Grading, recording the attempt, and unlocking the key all happen there, so a texted answer counts exactly like one on the website.
+- `lib/study-api.ts` calls `polya-study` with `POLYA_SUPABASE_SERVICE_ROLE_KEY` as the bearer and the student's id in `x-polya-user-id`, taken from the session auth. `polya-study` accepts that caller for `generate_questions` and `submit_attempt` only, and applies the student's own hourly window, daily caps, AI budget, and ownership checks. `polya-study` has GoTrue verify the key with an admin lookup of that student, which only a service-role key may make. The key must be in JWT form (the legacy service-role key), because the function's gateway verifies JWTs.
+- Timed mock exams stay on the website; the agent links the exam's study page.
 
 ## Personal digest (hub owner only)
 

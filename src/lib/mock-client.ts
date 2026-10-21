@@ -1,5 +1,6 @@
 import { invokeFunction } from "@/lib/functions";
 import type { MockRow } from "@/lib/study";
+import { withWriteRetry } from "@/lib/write-retry";
 
 export interface BuildState {
   status: MockRow["status"];
@@ -12,7 +13,8 @@ export interface BuildState {
 type Listener = (state: BuildState) => void;
 
 // Each step adds checked questions (writing one more batch when the course's
-// question bank runs short), so a mock fills up over several calls.
+// question bank runs short), so a mock fills up over several calls. A step that
+// ran out of time keeps what it had, so it's asked again (write-retry.ts).
 const MAX_STEPS = 30;
 const runs = new Map<string, { listeners: Set<Listener>; promise: Promise<BuildState> }>();
 
@@ -29,7 +31,9 @@ export function buildMock(mockId: string, onProgress?: Listener): Promise<BuildS
     try {
       let state: BuildState = { status: "building", built: 0, total: 0 };
       for (let step = 0; step < MAX_STEPS; step++) {
-        state = await invokeFunction<BuildState>("polya-study", { action: "build_mock", mock_id: mockId });
+        state = await withWriteRetry(() =>
+          invokeFunction<BuildState>("polya-study", { action: "build_mock", mock_id: mockId }),
+        );
         for (const listener of listeners) listener(state);
         if (state.status !== "building") break;
       }

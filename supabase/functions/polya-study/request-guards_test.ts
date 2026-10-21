@@ -11,6 +11,8 @@ import {
   loadHandler,
   rpcName,
   setBackend,
+  TEST_SERVICE_ROLE_KEY,
+  TEST_USER_ID,
   TEST_USER_JWT,
 } from "../_shared/test-serve.ts";
 
@@ -59,6 +61,13 @@ function backend(options: Options = {}): Call[] {
   setBackend(async (url, request) => {
     const auth = authRoute(url, request);
     if (auth) return auth;
+    // GoTrue's admin lookup: answers only for the service-role key (the iMessage caller's check).
+    const admin = url.pathname.match(/^\/auth\/v1\/admin\/users\/([0-9a-f-]+)$/);
+    if (admin) {
+      calls.push({ what: "auth admin lookup" });
+      if (request.headers.get("apikey") !== TEST_SERVICE_ROLE_KEY) return jsonResponse({ msg: "not admin" }, 401);
+      return admin[1] === TEST_USER_ID ? jsonResponse({ id: TEST_USER_ID }) : jsonResponse({ msg: "User not found" }, 404);
+    }
     if (url.hostname === "api.anthropic.com") {
       calls.push({ what: "claude", body: await request.json() });
       return claude.shift() ?? jsonResponse({ error: "no reply queued" }, 500);
@@ -400,4 +409,91 @@ Deno.test("ticking a plan item updates only that item", async () => {
   assertEquals(response.status, 200);
   const saved = calls.find((c) => c.what === "PATCH polya_exams")!.body as { plan: typeof plan };
   assertEquals(saved.plan.days[0]!.items.map((i) => i.done), [false, true]);
+});
+
+// --- the iMessage agent's service caller --------------------------------------
+
+function servicePost(body: unknown, userId: string | null = TEST_USER_ID, key = TEST_SERVICE_ROLE_KEY): Request {
+  return new Request(URL_, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      ...(userId ? { "x-polya-user-id": userId } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+Deno.test("the service caller grades for the named student, without a session lookup", async () => {
+  const calls = backend({ question: QUESTION_ROW, key: KEY_ROW });
+  const response = await handler(
+    servicePost({ action: "submit_attempt", question_id: QUESTION_ID, responses: [{ kind: "numeric", answer: "1 - 625/1296" }] }),
+  );
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).all_correct, true);
+  // A 200 at all means no session lookup: the fake GoTrue only accepts TEST_USER_JWT.
+  const attempt = calls.find((c) => c.what === "POST polya_practice_attempts")!.body as { user_id: string };
+  assertEquals(attempt.user_id, TEST_USER_ID);
+});
+
+Deno.test("the service caller writes questions through the user-scoped retrieval twins", async () => {
+  const calls = backend({
+    claude: [
+      claudeReply({ questions: [DIE_QUESTION] }),
+      claudeReply({ answers: [{ problem: "", parts: [{ answer_expr: "1 - 125/216", choices: [] }] }] }),
+    ],
+  });
+  const response = await handler(servicePost(GENERATE));
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).kept, 1);
+  const rpcs = names(calls).filter((n) => n.startsWith("rpc polya_"));
+  assertEquals(rpcs.sort(), ["rpc polya_match_units_for_user", "rpc polya_search_units_fts_for_user"]);
+});
+
+Deno.test("the service caller is limited to grading and writing questions", async () => {
+  for (const body of [
+    { action: "build_mock", mock_id: QUESTION_ID },
+    { action: "toggle_plan_item", exam_id: EXAM_ID, item_id: "d1-0", done: true },
+    { action: "propose_topics", exam_id: EXAM_ID },
+  ]) {
+    const calls = backend();
+    const response = await handler(servicePost(body));
+    assertEquals(response.status, 403, JSON.stringify(body));
+    assertEquals((await response.json()).code, "forbidden");
+    assertEquals(calls, []);
+  }
+});
+
+Deno.test("without a named student the key is just a bad session; a malformed id is a 400", async () => {
+  let calls = backend();
+  let response = await handler(servicePost(GENERATE, null));
+  assertEquals(response.status, 401);
+  await response.body?.cancel();
+  assertEquals(calls, []);
+
+  calls = backend();
+  response = await handler(servicePost(GENERATE, "not-a-uuid"));
+  assertEquals(response.status, 400);
+  await response.body?.cancel();
+  assertEquals(calls, []);
+});
+
+Deno.test("a wrong key, or a student who doesn't exist, is a 401 before any window or lookup", async () => {
+  for (const [userId, key] of [
+    [TEST_USER_ID, "not-the-service-key"],
+    ["00000000-0000-4000-8000-0000000000ff", TEST_SERVICE_ROLE_KEY],
+  ] as const) {
+    const calls = backend();
+    const response = await handler(servicePost(GENERATE, userId, key));
+    assertEquals(response.status, 401);
+    await response.body?.cancel();
+    assertEquals(names(calls), ["auth admin lookup"]);
+  }
+  // A student's own session can't borrow the path either.
+  const calls = backend();
+  const response = await handler(servicePost(GENERATE, TEST_USER_ID, TEST_USER_JWT));
+  assertEquals(response.status, 401);
+  await response.body?.cancel();
+  assertEquals(names(calls), ["auth admin lookup"]);
 });

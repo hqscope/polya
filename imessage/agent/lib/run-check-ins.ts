@@ -1,14 +1,23 @@
 // The check-in loop as one call, shared by the eve schedule (schedules/check-ins.ts) and the
 // manual trigger route (channels/check-ins.ts). Each check-in is handed to the student's iMessage
 // thread, where the agent writes the actual text (instructions/check-ins.md). After the check-ins,
-// the same run texts students whose Gradescope or Canvas connection stopped working (reconnect.ts),
-// then runs Noel's personal digest, which only ever reads and texts the hub owner (hub-digest.ts).
+// the same run texts exam reminders for exams students added in Study (exams.ts), then texts
+// students whose Gradescope or Canvas connection stopped working (reconnect.ts), then runs Noel's
+// personal digest, which only ever reads and texts the hub owner (hub-digest.ts).
 import type { SessionAuthContext } from "eve/context";
 import type { ScheduleToFn } from "eve/schedules";
 
 import photon from "../channels/photon.ts";
 import { claimCheckIn, loadCheckInLinks, releaseCheckIns } from "./check-ins-db.ts";
 import { processCheckIns, type CheckInRunCounts } from "./check-ins-runner.ts";
+import {
+  claimExamReminder,
+  loadExamFacts,
+  loadExamSends,
+  loadUpcomingExams,
+  releaseExamReminder,
+} from "./exams-db.ts";
+import { processExamReminders, type ExamRunCounts } from "./exams-runner.ts";
 import { collectHubSnapshot } from "./hub-digest.ts";
 import {
   claimHubItems,
@@ -36,6 +45,8 @@ import { STUDENT_ATTRIBUTE } from "./student.ts";
 export type { CheckInRunCounts } from "./check-ins-runner.ts";
 
 export interface LoopRunCounts extends CheckInRunCounts {
+  /** The exam pass, or null when it failed as a whole (the check-ins still ran). */
+  exams: ExamRunCounts | null;
   /** The reconnect pass, or null when it failed as a whole (the check-ins still ran). */
   reconnect: ReconnectRunCounts | null;
   /** Noel's personal digest, or null when it failed as a whole. Counts only, never content. */
@@ -43,7 +54,7 @@ export interface LoopRunCounts extends CheckInRunCounts {
 }
 
 /** Who a loop-started turn runs as. */
-export type LoopPrincipal = "polya-check-ins" | "polya-reconnect" | "polya-digest";
+export type LoopPrincipal = "polya-check-ins" | "polya-exams" | "polya-reconnect" | "polya-digest";
 
 /**
  * The principal a loop-started turn runs as: the loop itself, carrying the student's Polya user id
@@ -93,6 +104,26 @@ export async function runCheckIns(to: ScheduleToFn, now: Date): Promise<LoopRunC
     now,
   );
 
+  // After the check-ins: at most one exam text per student per local day (exams.ts).
+  const exams = await processExamReminders(
+    {
+      loadLinks: loadCheckInLinks,
+      loadExams: loadUpcomingExams,
+      loadSends: loadExamSends,
+      loadFacts: loadExamFacts,
+      claim: claimExamReminder,
+      release: releaseExamReminder,
+      send: (threadId, userId, message) => handToStudent(to, threadId, userId, message, "polya-exams"),
+      logError(message, details) {
+        console.error(`[polya exams] ${message}`, details);
+      },
+    },
+    now,
+  ).catch((error: unknown) => {
+    console.error("[polya exams] run failed", error instanceof Error ? error.message : error);
+    return null;
+  });
+
   // After the check-ins, so each Gradescope read is a hit on the 10-minute cache they just filled.
   const reconnect = await processReconnectNotices(
     {
@@ -141,5 +172,5 @@ export async function runCheckIns(to: ScheduleToFn, now: Date): Promise<LoopRunC
     return null;
   });
 
-  return { ...checkIns, reconnect, digest };
+  return { ...checkIns, exams, reconnect, digest };
 }

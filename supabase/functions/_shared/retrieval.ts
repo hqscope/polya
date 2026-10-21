@@ -15,22 +15,31 @@ const MIN_VECTOR_SIMILARITY = 0.25; // vector-only hits below this are dropped
 
 // Runs the two RPCs (as the user, via their JWT client), fuses, filters, and
 // expands. `excludeRoles` drops e.g. solution keys in practice mode.
+//
+// `forUserId` is for a caller with no student session (polya-study's iMessage
+// path passes the service-role client, where auth.uid() is null): it switches
+// to the user-scoped twins of the two RPCs
+// (20261015195047_polya_imessage.sql) and filters expansions by that user.
 export async function retrieve(
   userClient: SupabaseClient,
   courseId: string,
   query: string,
   excludeRoles: string[] = [],
+  forUserId?: string,
 ): Promise<RetrievedUnit[]> {
   const queryEmbedding = await embedQuery(query);
+  const scope = forUserId ? { p_user_id: forUserId } : {};
 
   const [vectorRes, ftsRes] = await Promise.all([
-    userClient.rpc("polya_match_units", {
+    userClient.rpc(forUserId ? "polya_match_units_for_user" : "polya_match_units", {
+      ...scope,
       p_course_id: courseId,
       p_query_embedding: toVectorLiteral(queryEmbedding),
       p_limit: VECTOR_CANDIDATES,
       p_exclude_roles: excludeRoles,
     }),
-    userClient.rpc("polya_search_units_fts", {
+    userClient.rpc(forUserId ? "polya_search_units_fts_for_user" : "polya_search_units_fts", {
+      ...scope,
       p_course_id: courseId,
       p_query: query,
       p_limit: FTS_CANDIDATES,
@@ -60,7 +69,7 @@ export async function retrieve(
   );
   const evidence = dedupeBySignature(fused).slice(0, EVIDENCE_MAX);
 
-  return await expand(userClient, courseId, evidence, excludeRoles);
+  return await expand(userClient, courseId, evidence, excludeRoles, forUserId);
 }
 
 // Expand the fused hits: pull ±1 ordinal neighbors (same source) and, for a
@@ -72,8 +81,14 @@ async function expand(
   courseId: string,
   hits: RetrievedUnit[],
   excludeRoles: string[],
+  forUserId?: string,
 ): Promise<RetrievedUnit[]> {
   const byId = new Map<string, RetrievedUnit>();
+  // RLS scopes a student's client; a service-role client needs the user filter.
+  const units = () => {
+    const query = userClient.from("polya_content_units").select(unitSelect()).eq("course_id", courseId);
+    return forUserId ? query.eq("user_id", forUserId) : query;
+  };
   for (const hit of hits) byId.set(hit.unit_id, hit);
   const excluded = new Set(excludeRoles);
   const keep = (row: RetrievedUnit) => !byId.has(row.unit_id) && !excluded.has(row.content_role);
@@ -92,11 +107,7 @@ async function expand(
     const orFilter = neighborKeys
       .map((key) => `and(source_id.eq.${key.source_id},ordinal.eq.${key.ordinal})`)
       .join(",");
-    const { data } = await userClient
-      .from("polya_content_units")
-      .select(unitSelect())
-      .eq("course_id", courseId)
-      .or(orFilter);
+    const { data } = await units().or(orFilter);
     for (const row of (data ?? []) as unknown as RetrievedUnit[]) {
       if (keep(row)) byId.set(row.unit_id, { ...row, score: 0 });
     }
@@ -104,11 +115,7 @@ async function expand(
 
   // Procedure parent + sibling steps
   if (procedureIds.size > 0) {
-    const { data } = await userClient
-      .from("polya_content_units")
-      .select(unitSelect())
-      .eq("course_id", courseId)
-      .in("procedure_id", Array.from(procedureIds));
+    const { data } = await units().in("procedure_id", Array.from(procedureIds));
     for (const row of (data ?? []) as unknown as RetrievedUnit[]) {
       if (keep(row)) byId.set(row.unit_id, { ...row, score: 0 });
     }
