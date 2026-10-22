@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 
 import Logo from "@/components/Logo";
+import { getAuthenticatedAppUser } from "@/lib/auth/session";
 import { sanitizeNextPath } from "@/lib/auth/next-path";
 import { defaultOpenGraph } from "@/lib/seo";
 
@@ -43,6 +45,12 @@ export default async function LoginPage({
   const params = await searchParams;
   const nextPath = sanitizeNextPath(params.next);
   const hadError = Boolean(params.error);
+
+  // Every "Get started" link lands here, so a student who is already signed in
+  // was asked to sign in with Google again on each visit. Send them on instead.
+  // An outage also returns no user, so it still shows the sign-in page.
+  const { user } = await getAuthenticatedAppUser();
+  if (user) redirect(nextPath);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center px-6 py-10">

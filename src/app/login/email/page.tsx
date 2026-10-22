@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 
 import Logo from "@/components/Logo";
 import EmailSignInForm from "@/components/auth/EmailSignInForm";
+import { getAuthenticatedAppUser } from "@/lib/auth/session";
 import { sanitizeNextPath } from "@/lib/auth/next-path";
 
 export const metadata: Metadata = {
@@ -19,6 +21,10 @@ export default async function EmailLoginPage({
 }) {
   const { next } = await searchParams;
   const nextPath = sanitizeNextPath(next);
+
+  // Already signed in: skip the form, same as /login.
+  const { user } = await getAuthenticatedAppUser();
+  if (user) redirect(nextPath);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center px-6 py-10">
