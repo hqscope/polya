@@ -120,3 +120,11 @@ export const COACH_MOCK_DAILY_LIMIT = 3;
 export const COACH_MOCK_DAILY_BUCKET = "polya-coach:mock:day";
 // A message (≤ 8,000 characters) plus ids.
 export const COACH_MAX_BODY_BYTES = 16 * 1024;
+
+// ---------------------------------------------------------------------------
+// polya-handoff: one sign-in token per "Open in Polya" click from the Scope
+// extension. A student clicks it a few times a session; the window only stops
+// a script from minting tokens in a loop.
+// ---------------------------------------------------------------------------
+export const HANDOFF_HOURLY_LIMIT = 30;
+export const HANDOFF_HOURLY_BUCKET = "polya-handoff:hour";
