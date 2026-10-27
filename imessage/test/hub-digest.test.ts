@@ -15,9 +15,11 @@ import {
   digestBudget,
   digestSentKey,
   digestsSentToday,
+  dropRepliedMail,
   formatDigestMessage,
   formatMorningBrief,
   GMAIL_DIGEST_QUERY,
+  GMAIL_SENT_QUERY,
   gmailKey,
   googleAccountsFrom,
   isValidHubKey,
@@ -26,6 +28,7 @@ import {
   parseAnnouncementsResult,
   parseCalendarResult,
   parseGmailResult,
+  parseSentThreads,
   selectDigestItems,
   todaysEvents,
   type DigestItem,
@@ -382,6 +385,82 @@ describe("collecting from the hub", () => {
     const snapshot = await collectHubSnapshot(reader, { now: TUE_2PM, calendarUntil: new Date(TUE_2PM.getTime() + 3 * HOUR) });
     assert.deepEqual(calls.find((call) => call.name === "gmail_search")?.args, { query: GMAIL_DIGEST_QUERY, maxResults: 10 });
     assert.equal(snapshot.failed, 4);
+  });
+
+  it("drops mail in threads Noel already replied in, but keeps messages that came after his reply", async () => {
+    const at = (hoursAgo: number) => new Date(TUE_2PM.getTime() - hoursAgo * HOUR).toISOString();
+    const inbox = {
+      messages: [
+        { id: "recruiter", threadId: "t-recruit", subject: "Next steps", from: "Recruiter <r@co.com>", date: at(5), snippet: "", labels: [], unread: true },
+        { id: "followup", threadId: "t-advisor", subject: "Re: plots", from: "Jane <j@b.edu>", date: at(1), snippet: "", labels: [], unread: true },
+        { id: "fresh", threadId: "t-new", subject: "Hello", from: "Prof <p@b.edu>", date: at(2), snippet: "", labels: [], unread: true },
+      ],
+    };
+    const sent = {
+      messages: [
+        { id: "s1", threadId: "t-recruit", subject: "Re: Next steps", date: at(3) },
+        { id: "s2", threadId: "t-advisor", subject: "Re: plots", date: at(4) },
+      ],
+    };
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    const reader: HubReader = {
+      async call(name, args) {
+        calls.push({ name, args });
+        if (name === "gmail_search") return { ok: true, errorCode: null, structured: args.query === GMAIL_SENT_QUERY ? sent : inbox };
+        return { ok: false, structured: null, errorCode: "NOT_FOUND" };
+      },
+    };
+    const snapshot = await collectHubSnapshot(reader, { now: TUE_2PM, calendarUntil: new Date(TUE_2PM.getTime() + 3 * HOUR) });
+    assert.deepEqual(
+      snapshot.gmail.map((item) => item.key),
+      ["gmail:followup", "gmail:fresh"],
+    );
+    assert.deepEqual(calls.filter((call) => call.name === "gmail_search").map((call) => call.args), [
+      { query: GMAIL_DIGEST_QUERY, maxResults: 10 },
+      { query: GMAIL_SENT_QUERY, maxResults: 25 },
+    ]);
+  });
+
+  it("keeps the mail when the sent-mail read fails", async () => {
+    const recent = new Date(TUE_2PM.getTime() - HOUR).toISOString();
+    const reader: HubReader = {
+      async call(name, args) {
+        if (name === "gmail_search" && args.query === GMAIL_DIGEST_QUERY) {
+          return { ok: true, errorCode: null, structured: { messages: [{ id: "m1", threadId: "t1", subject: "Hi", from: "A", date: recent, labels: [], unread: true }] } };
+        }
+        return { ok: false, structured: null, errorCode: "NOT_FOUND" };
+      },
+    };
+    const snapshot = await collectHubSnapshot(reader, { now: TUE_2PM, calendarUntil: new Date(TUE_2PM.getTime() + 3 * HOUR) });
+    assert.deepEqual(snapshot.gmail.map((item) => item.key), ["gmail:m1"]);
+  });
+});
+
+describe("dropping replied mail", () => {
+  const at = (hoursAgo: number) => new Date(TUE_2PM.getTime() - hoursAgo * HOUR).toISOString();
+  it("reads the latest dated sent message per thread", () => {
+    const threads = parseSentThreads({
+      messages: [
+        { id: "a", threadId: "t", date: at(5) },
+        { id: "b", threadId: "t", date: at(2) },
+        { id: "c", threadId: "u", date: "not a date" },
+        { id: "d", date: at(1) },
+      ],
+    });
+    assert.deepEqual([...threads], [["t", Date.parse(at(2))]]);
+  });
+
+  it("drops a message only when Noel wrote in its thread at or after it arrived", () => {
+    const threads = new Map([["t", Date.parse(at(2))]]);
+    const before = mail("before", { threadId: "t", at: at(3) });
+    const same = mail("same", { threadId: "t", at: at(2) });
+    const after = mail("after", { threadId: "t", at: at(1) });
+    const other = mail("other", { threadId: "u" });
+    const unthreaded = mail("unthreaded");
+    assert.deepEqual(
+      dropRepliedMail([before, same, after, other, unthreaded], threads).map((item) => item.key),
+      ["gmail:after", "gmail:other", "gmail:unthreaded"],
+    );
   });
 });
 
