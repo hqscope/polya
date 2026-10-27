@@ -49,6 +49,8 @@ export const DIGEST_RULES = {
   briefMaxMail: 8,
   briefMaxAnnouncements: 4,
   gmailMaxResults: 10,
+  /** Sent messages read to find threads Noel already replied in. */
+  gmailSentMaxResults: 25,
   calendarMaxResults: 15,
   /** Google accounts read per run when the hub has several connected. */
   maxGoogleAccounts: 3,
@@ -61,6 +63,9 @@ export const DIGEST_RULES = {
 /** Unread inbox mail from the last two days, minus Gmail's bulk categories. */
 export const GMAIL_DIGEST_QUERY =
   "is:unread in:inbox newer_than:2d -category:promotions -category:social -category:updates -category:forums";
+
+/** Noel's own sent mail over the same window, to drop threads he already replied in. */
+export const GMAIL_SENT_QUERY = "in:sent newer_than:2d";
 
 export const DIGEST_SENT_PREFIX = "digest:sent:";
 
@@ -83,6 +88,8 @@ export interface DigestItem {
   readonly snippet: string | null;
   /** Calendar location. */
   readonly location: string | null;
+  /** Gmail thread, to tell whether Noel already replied in it. */
+  readonly threadId?: string | null;
 }
 
 /** A calendar event from calendar_list_events, reduced to what the digest and brief show. */
@@ -159,6 +166,7 @@ export function isValidHubKey(key: string): boolean {
 
 const gmailMessage = z.object({
   id: z.string().min(1),
+  threadId: z.string().nullable().optional(),
   from: z.string().nullable().optional(),
   subject: z.string().nullable().optional(),
   date: z.string().nullable().optional(),
@@ -228,9 +236,36 @@ export function parseGmailResult(structured: unknown, now: Date): DigestItem[] {
       at: message.date ?? null,
       snippet: cleanField(message.snippet, DIGEST_RULES.snippetMax) || null,
       location: null,
+      threadId: message.threadId || null,
     });
   }
   return items;
+}
+
+/** gmail_search over sent mail -> the latest time Noel wrote in each thread (dated messages only). */
+export function parseSentThreads(structured: unknown): Map<string, number> {
+  const latest = new Map<string, number>();
+  for (const raw of entries(structured, "messages")) {
+    const parsed = gmailMessage.safeParse(raw);
+    if (!parsed.success || !parsed.data.threadId) continue;
+    const ms = parsed.data.date ? Date.parse(parsed.data.date) : Number.NaN;
+    if (!Number.isFinite(ms)) continue;
+    latest.set(parsed.data.threadId, Math.max(ms, latest.get(parsed.data.threadId) ?? ms));
+  }
+  return latest;
+}
+
+/**
+ * Drops mail Noel already answered: he wrote in the same thread at or after the message arrived.
+ * A message that came in after his reply stays, since it may need a new one.
+ */
+export function dropRepliedMail(items: readonly DigestItem[], sentThreads: ReadonlyMap<string, number>): DigestItem[] {
+  return items.filter((item) => {
+    const sentAt = item.threadId ? sentThreads.get(item.threadId) : undefined;
+    if (sentAt === undefined) return true;
+    const receivedAt = item.at ? Date.parse(item.at) : Number.NaN;
+    return Number.isFinite(receivedAt) && receivedAt > sentAt;
+  });
 }
 
 /** canvas_announcements -> announcements posted in the last two days. */
@@ -323,14 +358,19 @@ export async function collectHubSnapshot(reader: HubReader, request: CollectRequ
   if (!connections.ok) failed += 1;
   const accountArg = (account: string | undefined) => (account ? { account } : {});
 
+  // Unread mail, minus threads Noel already replied in. The sent-mail read only runs when there's
+  // threaded mail to check; if it fails, the mail is kept as is.
+  const readMail = async (account: string | undefined): Promise<DigestItem[]> => {
+    const items = await read("gmail_search", { query: GMAIL_DIGEST_QUERY, maxResults: DIGEST_RULES.gmailMaxResults, ...accountArg(account) }, (s) =>
+      parseGmailResult(s, now),
+    );
+    if (!items.some((item) => item.threadId)) return items;
+    const sent = await reader.call("gmail_search", { query: GMAIL_SENT_QUERY, maxResults: DIGEST_RULES.gmailSentMaxResults, ...accountArg(account) });
+    return sent.ok ? dropRepliedMail(items, parseSentThreads(sent.structured)) : items;
+  };
+
   const [gmail, canvas, events] = await Promise.all([
-    Promise.all(
-      accounts.map((account) =>
-        read("gmail_search", { query: GMAIL_DIGEST_QUERY, maxResults: DIGEST_RULES.gmailMaxResults, ...accountArg(account) }, (s) =>
-          parseGmailResult(s, now),
-        ),
-      ),
-    ),
+    Promise.all(accounts.map(readMail)),
     read("canvas_announcements", { days: 2 }, (s) => parseAnnouncementsResult(s, now)),
     Promise.all(
       accounts.map((account) =>
