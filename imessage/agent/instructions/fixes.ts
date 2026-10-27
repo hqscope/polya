@@ -20,7 +20,10 @@ export default defineDynamic({
       } catch (error) {
         console.error("[polya fixes] lessons load threw:", error instanceof Error ? error.message : error);
       }
-      const content = formatFixInstructions(lessons, canFileFixes());
+      const canFile = canFileFixes();
+      // Counts only, so a turn where the fix tools were missing shows up in the runtime logs.
+      console.info("[polya fixes] owner turn", { canFile, lessons: lessons.length });
+      const content = formatFixInstructions(lessons, canFile);
       return content ? defineInstructions({ content }) : null;
     },
   },

@@ -18,7 +18,7 @@ export default defineDynamic({
       if (!fixOwner(studentIdFrom(ctx.session.auth)) || !canFileFixes()) return null;
       return defineTool({
         description:
-          "Noel only. Use when Noel says, in his own words, that something you texted was wrong. Saves a lesson you follow in his conversations from now on, and files a fix for every student that he reviews before it ships. He confirms before it runs.",
+          "Noel only. Use when Noel says, in his own words, that something you texted was wrong or unneeded, including a digest, brief, or check-in item (for example \"I already replied to them\"). Saves a lesson you follow in his conversations from now on, and files a fix for every student that he reviews before it ships. He confirms before it runs.",
         inputSchema: z.object({
           lesson: z
             .string()

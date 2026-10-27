@@ -163,6 +163,14 @@ describe("formatFixInstructions", () => {
     assert.doesNotMatch(text, /Lessons from/);
   });
 
+  it("counts a digest item he already handled, and forbids unbacked promises", () => {
+    const text = formatFixInstructions([], true) ?? "";
+    assert.match(text, /I already replied to them/);
+    assert.match(text, /even when you couldn't have known/);
+    assert.match(text, /unless you call report_mistake in the same turn/);
+    assert.match(text, /"#2"/);
+  });
+
   it("lists the lessons in effect by number", () => {
     const text = formatFixInstructions([fix({ id: 3 }), fix({ id: 7, lesson: "Keep digests to one line." })], false) ?? "";
     assert.match(text, /#3: Before saying someone is waiting/);
