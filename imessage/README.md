@@ -12,10 +12,12 @@ agent/
   instructions/
     check-ins.md           how to word a "[polya check-in]" message
     core.md                who Polya is on iMessage and how it helps
+    fixes.ts               Noel only, resolved per turn: the fix loop and the lessons in effect
   channels/
     photon.ts              iMessage channel: linking, daily cap, auth for every turn (default export)
     check-ins.ts           POST /polya/check-ins/run, bearer POLYA_CHECKINS_SECRET
     gradescope-connect.ts  POST /polya/gradescope/connect, bearer POLYA_CONNECT_SECRET (askpolya.com connect page)
+    fixes.ts               POST /polya/fixes/notify, bearer POLYA_FIXES_SECRET (scope-ops fix status)
   schedules/check-ins.ts   check-in loop on a cron
   memory/notes.ts          long-range notes per student (notes__save / notes__remove), see lib/notes-memory.ts
   tools/                   the only authored tools the model has
@@ -31,6 +33,8 @@ agent/
     no_reply.ts            lets a check-in turn stay silent (eve's no_reply)
     reconnect_link.ts      link to connect or reconnect Gradescope or Canvas, plus whether it works now
     unlink.ts              asks the student to confirm first (approval: always())
+    report_mistake.ts      Noel only: saves a lesson and files the fix with scope-ops (approval: always())
+    ship_fix.ts            Noel only: merges a fix's PR he looked at (approval: always())
   lib/                     shared code; the pure modules are covered by test/
 test/                      node --test, pure logic only
 ```
@@ -54,6 +58,8 @@ Names only; see `.env.example`. Never commit values.
 | `GEMINI_API_KEY` | Query embeddings for course search, if search uses them |
 | `POLYA_IMESSAGE_DAILY_REPLY_CAP` | Replies per student per UTC day, default 60 |
 | `NOEL_HUB_URL`, `NOEL_HUB_TOKEN`, `NOEL_HUB_POLYA_USER_ID` | Noel's personal hub (read-only MCP) in his own conversation, and his personal digest. Unset turns both off |
+| `SCOPE_OPS_URL`, `SCOPE_OPS_TOKEN` | Fixes Noel reports by text: scope-ops' MCP server and a personal token tagged `"source":"polya"`. Unset token turns filing off |
+| `POLYA_FIXES_SECRET` | Bearer secret scope-ops sends to `POST /polya/fixes/notify`; at least 32 characters, same value in scope-ops |
 
 ## How a message is handled
 
@@ -128,6 +134,19 @@ The check-in run ends with a pass for one account: the hub owner (`NOEL_HUB_POLY
 - **Morning brief:** the first run from 8:00 local, outside quiet hours and before noon, hands off `[polya morning brief]` instead: events left today, assignments due in 3 days that aren't done (the `upcoming_assignments` loader), and new mail and announcements. It claims those items so the digest doesn't repeat them, and doesn't count against the 6.
 - **Dedupe:** `polya_imessage_hub_seen` (`supabase/migrations/20261020195214_polya_imessage_hub_seen.sql`) holds `gmail:<id>`, `canvas:<announcement id>`, `cal:<event id>:<start>`, `brief:<date>`, and one `digest:sent:<time>` row per digest (the daily cap counts those). Keys are claimed before the hand-off and released if it fails. Until the table exists, the pass reads nothing and logs that once per process.
 - Quiet hours and "pause check-ins" apply to the digest and the brief too.
+
+## Fixing mistakes by text (owner only)
+
+When Polya texts Noel something wrong, he can text back what was wrong and Polya fixes itself in two steps: right away in his own conversations, and for every student once he ships a reviewed PR. Everything here exists only in the owner's sessions (`NOEL_HUB_POLYA_USER_ID`); the tools, the instructions, and the hand-offs are resolved per turn and are absent for every other student. Pure logic and the loop's overview are in `lib/fixes.ts`.
+
+1. **Report.** Noel says what was wrong. The agent calls `report_mistake` with a one- or two-sentence lesson and a description of the case without names or message text, since the case lands in a GitHub issue and a Slack card. He replies `1` to eve's numbered confirmation. The tool saves the lesson in `polya_imessage_fixes` and files the fix with scope-ops (`handoff_task`, product `polya`).
+2. **Instant fix.** `instructions/fixes.ts` adds the lessons in effect to the system instructions on every owner turn, including check-ins and digests. A lesson stops applying when its fix ships, its PR closes, or after 30 days. At most 10 apply at once.
+3. **Review.** scope-ops' cloud agent opens a PR. At pr-ready, scope-ops takes it out of draft, requests Noel's review (GitHub emails him), and posts the PR and its head commit to `POST /polya/fixes/notify`. The route records them and hands `[polya fix]` to his thread, and the agent texts him the summary and link. Repeats (same commit, or anything after it shipped) are quiet.
+4. **Ship.** Noel texts "ship it". The agent calls `ship_fix`; he replies `1`. The tool sends scope-ops' `ship_task` the head commit stored from the notice, never one from the model. scope-ops squash-merges only if the PR is still on that commit, targets the default branch, and its checks passed.
+
+Merging deploys only when the Vercel project builds from Git (Root Directory `imessage`, see [Deploy](#deploy-own-vercel-project)). Without that, a shipped fix waits for the next manual deploy.
+
+The table comes from `supabase/migrations/20261027023715_polya_imessage_fixes.sql`. Without it, `report_mistake` files nothing and says so, and no lessons load.
 
 ## Run locally
 

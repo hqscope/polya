@@ -54,7 +54,7 @@ export interface LoopRunCounts extends CheckInRunCounts {
 }
 
 /** Who a loop-started turn runs as. */
-export type LoopPrincipal = "polya-check-ins" | "polya-exams" | "polya-reconnect" | "polya-digest";
+export type LoopPrincipal = "polya-check-ins" | "polya-exams" | "polya-reconnect" | "polya-digest" | "polya-fixes";
 
 /**
  * The principal a loop-started turn runs as: the loop itself, carrying the student's Polya user id
