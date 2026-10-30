@@ -167,4 +167,4 @@ Checks: `npm run lint` · `npm run typecheck` · `npm test` · `npm run eval`.
 
 ## Credits
 
-Built and run by Noel Sason as part of [Scope](https://github.com/hqscope).
+Built and run by Noel Jubil Sason as part of [Scope](https://github.com/hqscope).
