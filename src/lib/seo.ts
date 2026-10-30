@@ -18,10 +18,10 @@ export const siteUrl =
   normalizeSiteUrl(process.env.NEXT_PUBLIC_SITE_URL) || "https://askpolya.com";
 
 export const siteName = "Polya";
-// Polya's owner and operator. There is no incorporated entity: Noel Sason runs
+// Polya's owner and operator. There is no incorporated entity: Noel Jubil Sason runs
 // Polya as an individual, and this must match the identity verified with
 // OpenAI for the ChatGPT plugin. Don't name a company here until one exists.
-export const ownerName = "Noel Sason";
+export const ownerName = "Noel Jubil Sason";
 export const OWNER_SITE_URL = "https://noelsason.com";
 export const contactEmail = "hello@askpolya.com";
 
