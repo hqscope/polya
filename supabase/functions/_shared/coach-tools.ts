@@ -43,7 +43,7 @@ export const TOOL_KIND: Record<ToolName, "data" | "terminal" | "bookkeeping"> = 
 export const MAX_REPLIES = 4;
 const MAX_REPLY_CHARS = 80;
 const MAX_PLAN_DAYS = 21;
-const MAX_PLAN_TASKS = 5;
+const MAX_PLAN_TASKS = 8;
 const DEFAULT_PLAN_WINDOW_DAYS = 14;
 const MAX_QUERY_CHARS = 300;
 const MAX_TOPICS_PER_QUESTION = 4;
@@ -159,7 +159,7 @@ export const COACH_TOOLS = [
               topic: { type: "integer", description: "Topic number, or 0 for a general task (a mock exam, review)." },
               text: { type: "string" },
             }),
-            description: "1 to 5 concrete tasks.",
+            description: "1 to 8 concrete tasks.",
           },
         }),
       },
@@ -386,11 +386,11 @@ function checkPlan(input: Record<string, unknown>, ctx: ToolContext): Checked {
       return fail("Each day needs a date as YYYY-MM-DD.");
     }
     if (raw.date < ctx.today || raw.date > last) return fail(`Dates must run from ${ctx.today} to ${last}.`);
-    if (!Array.isArray(raw.tasks) || raw.tasks.length === 0 || raw.tasks.length > MAX_PLAN_TASKS) {
-      return fail(`Each day needs 1 to ${MAX_PLAN_TASKS} tasks.`);
-    }
+    if (!Array.isArray(raw.tasks) || raw.tasks.length === 0) return fail("Each day needs at least one task.");
+    // An over-full day is trimmed, not rejected: a rejected plan left a student
+    // with "Here's the plan:" and nothing under it when no retry was left.
     const items = [];
-    for (const task of raw.tasks) {
+    for (const task of raw.tasks.slice(0, MAX_PLAN_TASKS)) {
       if (!isObject(task)) return fail("Each task needs a topic number and text.");
       const topic = task.topic === 0 ? null : topicByNumber(ctx, task.topic);
       if (task.topic !== 0 && !topic) return fail("A task's topic must be a topic number from <exam_state>, or 0.");

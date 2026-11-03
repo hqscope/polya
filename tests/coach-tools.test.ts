@@ -155,6 +155,18 @@ test("plans stay between today and the exam, get ids, and merge repeated dates",
   assert.ok(noDate.ok);
 });
 
+test("an over-full plan day is trimmed to 8 tasks instead of rejecting the plan", () => {
+  const tasks = Array.from({ length: 11 }, (_, i) => ({ topic: (i % 3) + 1, text: `Task ${i + 1}` }));
+  const plan = validateToolInput("save_plan", { days: [{ date: "2026-10-20", focus: "Everything", tasks }], note: "" }, ctx());
+  assert.ok(plan.ok);
+  if (!plan.ok || plan.value.name !== "save_plan") return;
+  assert.equal(plan.value.plan.days[0]!.items.length, 8);
+  assert.equal(plan.value.plan.days[0]!.items[7]!.text, "Task 8");
+
+  const empty = validateToolInput("save_plan", { days: [{ date: "2026-10-20", focus: "x", tasks: [] }], note: "" }, ctx());
+  assert.equal(empty.ok, false);
+});
+
 test("replies, errors and mocks are capped and mapped", () => {
   const replies = validateToolInput("suggest_replies", { replies: ["Next", "Next", "Slower", "Mix it", "Harder", "Again"] }, ctx());
   assert.ok(replies.ok && replies.value.name === "suggest_replies" && replies.value.replies.length === 4);
