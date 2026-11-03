@@ -98,8 +98,17 @@ const IN_PROGRESS = new Set(["queued", "fetching", "parsing", "embedding"]);
 const UNREADABLE_REASON: Record<string, string> = {
   needs_ocr: "looks like scanned pages",
   failed: "couldn't be opened",
-  skipped: "was skipped",
 };
+
+// Why a file belongs on the "couldn't be read" list, or null. A skipped file
+// is usually a course-website page with no real text on it, which isn't
+// missing material, and listing it led the coach to ask a student to retype
+// a lecture slide. Only a lecture video still waiting on its transcript is
+// worth mentioning.
+function unreadableReason(source: InventorySource): string | null {
+  if (source.status === "skipped") return source.origin === "canvas_media" ? "has no transcript yet" : null;
+  return UNREADABLE_REASON[source.status] ?? null;
+}
 
 function words(text: string): string {
   return text.toLowerCase().replace(/\.[a-z0-9]{2,5}$/, "").replace(/[_\-.()[\]]+/g, " ");
@@ -167,8 +176,8 @@ export function buildInventory(sources: readonly InventorySource[], marks: reado
   const readable = sources.filter((s) => s.status === "ready");
   const inProgress = sources.filter((s) => IN_PROGRESS.has(s.status)).length;
   const unreadable = sources
-    .filter((s) => UNREADABLE_REASON[s.status])
-    .map((s) => ({ source_id: s.id, title: s.title, reason: UNREADABLE_REASON[s.status]! }));
+    .filter((s) => unreadableReason(s) !== null)
+    .map((s) => ({ source_id: s.id, title: s.title, reason: unreadableReason(s)! }));
 
   const byKind = new Map<InventoryKind, InventorySource[]>();
   for (const source of readable) {

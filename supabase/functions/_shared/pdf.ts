@@ -7,6 +7,10 @@ import type { PageText } from "./chunker.ts";
 import { pageTextFromItems } from "./db-text.ts";
 
 const MIN_TEXT_CHARS = 50; // pages below this count as empty (scanned/slide)
+// Pages with some text but less than this are slide-like: a title and a few
+// bullets, often next to a diagram or a photo that the text layer can't carry.
+// They're candidates for a figure description (ocr.ts checks for a picture).
+const SPARSE_TEXT_CHARS = 400;
 
 export interface PdfInfo {
   totalPages: number;
@@ -15,6 +19,7 @@ export interface PdfInfo {
 export interface PageRangeResult {
   pages: PageText[]; // only pages with >= MIN_TEXT_CHARS extractable text
   emptyPages: number[]; // 1-indexed page numbers in range with too little text (OCR targets)
+  sparsePages: number[]; // pages in `pages` with little text, which may carry a picture worth describing
   nextPage: number; // resume cursor (1-indexed page to parse next)
   done: boolean;
 }
@@ -45,6 +50,7 @@ export async function extractPageRange(
 
   const pages: PageText[] = [];
   const emptyPages: number[] = [];
+  const sparsePages: number[] = [];
 
   for (let pageNum = from; pageNum <= to; pageNum++) {
     const page = await pdf.getPage(pageNum);
@@ -53,13 +59,14 @@ export async function extractPageRange(
 
     if (text.length >= MIN_TEXT_CHARS) {
       pages.push({ pageNum, text });
+      if (text.length < SPARSE_TEXT_CHARS) sparsePages.push(pageNum);
     } else {
       emptyPages.push(pageNum);
     }
   }
 
   const done = to >= total;
-  return { pages, emptyPages, nextPage: to + 1, done };
+  return { pages, emptyPages, sparsePages, nextPage: to + 1, done };
 }
 
 // Heuristic: a source is "needs_ocr" when almost every page had too little
@@ -69,4 +76,4 @@ export function isMostlyScanned(emptyPages: number, totalPages: number): boolean
   return emptyPages / totalPages > 0.6;
 }
 
-export { MIN_TEXT_CHARS };
+export { MIN_TEXT_CHARS, SPARSE_TEXT_CHARS };

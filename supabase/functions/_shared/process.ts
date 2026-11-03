@@ -26,7 +26,8 @@ import {
 } from "./ingest.ts";
 import { extractPageRange, getPdfInfo } from "./pdf.ts";
 import type { PageText } from "./chunker.ts";
-import { ocrEnabled, ocrImage, ocrPdfPages, ocrProvider } from "./ocr.ts";
+import { ocrEnabled, ocrImage, ocrProvider, readPdfPages } from "./ocr.ts";
+import { addFigures } from "./ocr-pages.ts";
 import { GeminiTransientError } from "./embeddings.ts";
 import { chargeImportUnits } from "./import-caps.ts";
 import { STORAGE_FULL_MESSAGE, StorageFullError } from "./storage-quota.ts";
@@ -481,18 +482,27 @@ async function advancePdf(
   const bytes = await downloadFromStorage(source.storage_path!);
   const range = await extractPageRange(bytes, source.pages_parsed + 1, PARSE_PAGE_BATCH);
 
+  // Image-only pages are transcribed in full; slide-like pages keep their text
+  // and gain a line for each picture on them (a diagram, a graph, a photo of
+  // a problem), so what a slide shows can be searched and cited too.
   let pages = range.pages;
-  if (range.emptyPages.length > 0 && ocrEnabled()) {
-    // Outside the try below: a cap error must re-queue the batch, not be
-    // swallowed as a permanent OCR failure (which would drop these pages).
-    await chargeImportUnits(service, source.user_id, "ocr", range.emptyPages.length, new Date(), ocrProvider());
+  if ((range.emptyPages.length > 0 || range.sparsePages.length > 0) && ocrEnabled()) {
     try {
-      const ocrPages = await ocrPdfPages(bytes, range.emptyPages, source.page_count);
-      pages = mergePages(range.pages, ocrPages);
+      const read = await readPdfPages(
+        bytes,
+        range.emptyPages,
+        range.sparsePages,
+        source.page_count,
+        // Metered once readPdfPages knows which pages it will send. A cap
+        // error is transient, so it re-queues the batch below instead of
+        // being swallowed as a permanent OCR failure (which would drop pages).
+        (count) => chargeImportUnits(service, source.user_id, "ocr", count, new Date(), ocrProvider()),
+      );
+      pages = mergePages(addFigures(range.pages, read.figures), read.transcribed);
     } catch (err) {
-      // Transient OCR failure → let the pump re-queue and retry the whole batch.
+      // Transient OCR failure or a daily cap → let the pump re-queue and retry the whole batch.
       if (isTransient(err)) throw err;
-      // Permanent OCR failure → skip these image pages (fall through, text only).
+      // Permanent OCR failure → keep the text layer only (fall through).
       console.error(`[polya-import] OCR failed for ${source.id}:`, err);
     }
   }

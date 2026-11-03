@@ -91,3 +91,12 @@ test("the couldn't-be-read tile survives the six-tile limit", () => {
   assert.equal(inv.tiles.length, 6);
   assert.equal(inv.tiles.at(-1)!.kind, "unreadable");
 });
+
+test("a skipped website page isn't 'couldn't be read'; a lecture video without a transcript is", () => {
+  const inv = buildInventory([
+    src("Lec1.pdf"),
+    src("Course home", { status: "skipped", origin: "site_page", source_kind: "html" }),
+    src("Lecture 5 recording", { status: "skipped", origin: "canvas_media", source_kind: "transcript_vtt" }),
+  ]);
+  assert.deepEqual(inv.unreadable.map((u) => [u.title, u.reason]), [["Lecture 5 recording", "has no transcript yet"]]);
+});

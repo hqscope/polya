@@ -16,13 +16,21 @@
 // (rate limit, 5xx) re-queues the whole batch via the pump.
 // Files over LARGE_PDF_BYTES skip the slicing (too much CPU for one edge
 // invocation) and are transcribed whole through the Files API (ocr-pages.ts).
-import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
+import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef, PDFStream } from "https://esm.sh/pdf-lib@1.17.1";
 
 import type { AiProvider } from "./ai-budget.ts";
 import type { PageText } from "./chunker.ts";
 import { sanitizeDbText } from "./db-text.ts";
 import { GEMINI_KEY, geminiFetchWithRetry, isDailyQuotaBody, parseRetryDelayMs } from "./embeddings.ts";
-import { LARGE_PDF_BYTES, splitPageMarkers, WHOLE_DOC_MAX_PAGES, wholeDocumentPrompt } from "./ocr-pages.ts";
+import {
+  FIGURE_INSTRUCTION,
+  FIGURE_ONLY_PROMPT,
+  figureLines,
+  LARGE_PDF_BYTES,
+  splitPageMarkers,
+  WHOLE_DOC_MAX_PAGES,
+  wholeDocumentPrompt,
+} from "./ocr-pages.ts";
 
 // Read via globalThis so this module type-checks under Node (tests) without a
 // Deno global declaration, while still resolving the key in the Deno runtime.
@@ -44,7 +52,8 @@ const OCR_PROMPT =
   "Transcribe ALL readable text from this PDF page into plain text, preserving reading order and " +
   "line breaks. Include text inside figures, tables, and diagrams. Render equations and chemical " +
   "formulae as inline text (e.g. Vmax, [S], H2O, ATP). Output only the transcribed text — no " +
-  "commentary, no headings you invent. If the page has no readable text, output nothing.";
+  `commentary, no headings you invent. ${FIGURE_INSTRUCTION} If the page has no readable text and no ` +
+  "pictures, output nothing.";
 
 export function ocrEnabled(): boolean {
   return ANTHROPIC_KEY.length > 0 || GEMINI_KEY.length > 0;
@@ -207,41 +216,62 @@ async function deleteAnthropicFile(fileId: string): Promise<void> {
 }
 
 // Large scans: one request per parse batch with the whole file attached by
-// id, asking for the batch's pages behind "=== PAGE n ===" markers. Every
-// page of the file counts as input tokens on each call, so this is only used
-// where slicing would exceed the CPU budget (LARGE_PDF_BYTES).
+// id, asking for the batch's pages behind "=== PAGE n ===" markers: image-only
+// pages transcribed in full, and slide-like pages (text already read) for
+// their pictures only. Every page of the file counts as input tokens on each
+// call, so this is only used where slicing would exceed the CPU budget
+// (LARGE_PDF_BYTES).
 async function ocrWholeDocument(
   bytes: ArrayBuffer,
   pageNums: number[],
   totalPages: number,
-): Promise<PageText[]> {
+  figurePages: number[] = [],
+): Promise<PdfPagesRead> {
   const fileId = await uploadToAnthropicFiles(bytes);
   const source = { type: "document", source: { type: "file", file_id: fileId } } as const;
+  const sort = (text: string, transcribe: number[], figures: number[]): PdfPagesRead => {
+    const split = splitPageMarkers(text, [...transcribe, ...figures], 1);
+    return {
+      transcribed: split.filter((p) => transcribe.includes(p.pageNum) && p.text.length >= OCR_MIN_CHARS),
+      figures: split
+        .filter((p) => figures.includes(p.pageNum))
+        .map((p) => ({ pageNum: p.pageNum, text: figureLines(p.text) }))
+        .filter((p) => p.text.length > 0),
+    };
+  };
   try {
     try {
       const text = await anthropicTranscribe(
         source,
-        wholeDocumentPrompt(pageNums, totalPages),
+        wholeDocumentPrompt(pageNums, totalPages, figurePages),
         WHOLE_DOC_MAX_OUTPUT_TOKENS,
       );
-      return splitPageMarkers(text, pageNums, OCR_MIN_CHARS);
+      return sort(text, pageNums, figurePages);
     } catch (err) {
       // Transcribing ten pages of a published book at once trips an output
       // content filter (400 "Output blocked by content filtering policy";
       // seen on literature excerpts, 2026-10-09). One page at a time is a
       // short excerpt and usually passes, so retry that way, skipping any
       // page that is still blocked.
-      if (!isContentFiltered(err) || pageNums.length === 1) throw err;
-      console.warn(`[polya-import] whole-document OCR was content-filtered; retrying ${pageNums.length} pages singly`);
-      const out: PageText[] = [];
-      for (const pageNum of pageNums) {
+      if (!isContentFiltered(err) || pageNums.length + figurePages.length === 1) throw err;
+      console.warn(
+        `[polya-import] whole-document OCR was content-filtered; retrying ${pageNums.length + figurePages.length} pages singly`,
+      );
+      const out: PdfPagesRead = { transcribed: [], figures: [] };
+      const singles = [
+        ...pageNums.map((pageNum) => ({ pageNum, figure: false })),
+        ...figurePages.map((pageNum) => ({ pageNum, figure: true })),
+      ];
+      for (const { pageNum, figure } of singles) {
         try {
           const text = await anthropicTranscribe(
             source,
-            wholeDocumentPrompt([pageNum], totalPages),
+            figure ? wholeDocumentPrompt([], totalPages, [pageNum]) : wholeDocumentPrompt([pageNum], totalPages),
             MAX_OUTPUT_TOKENS,
           );
-          out.push(...splitPageMarkers(text, [pageNum], OCR_MIN_CHARS));
+          const one = sort(text, figure ? [] : [pageNum], figure ? [pageNum] : []);
+          out.transcribed.push(...one.transcribed);
+          out.figures.push(...one.figures);
         } catch (pageErr) {
           if (pageErr instanceof OcrTransientError) throw pageErr;
           console.warn(`[polya-import] OCR skipped page ${pageNum} of a large file:`, pageErr);
@@ -338,7 +368,7 @@ const IMAGE_OCR_PROMPT =
   "whiteboard) into plain text, preserving reading order and line breaks. Include handwriting and " +
   "text inside figures, tables, and diagrams. Render equations and chemical formulae as inline text " +
   "(e.g. Vmax, [S], H2O, ATP). Output only the transcribed text — no commentary, no headings you " +
-  "invent. If the photo has no readable text, output nothing.";
+  `invent. ${FIGURE_INSTRUCTION} If the photo has no readable text and no pictures, output nothing.`;
 
 // A photo a student added as course material (a JPEG, already shrunk by the
 // browser). Same providers and fallbacks as a scanned PDF page; returns "" for
@@ -364,53 +394,145 @@ export async function ocrImage(jpegBytes: Uint8Array): Promise<string> {
   return text.length >= OCR_MIN_CHARS ? text : "";
 }
 
-// OCR the given 1-indexed pages of a PDF. Returns one PageText per page that
-// yielded readable text (blank and declined pages dropped). No-op when no
-// provider key is set, so local/offline runs and the eval harness still work.
-export async function ocrPdfPages(
+export interface PdfPagesRead {
+  /** Image-only pages, transcribed (with a "Figure:" line per picture). */
+  transcribed: PageText[];
+  /** Slide-like pages whose text was already read: just their "Figure:" lines. */
+  figures: PageText[];
+}
+
+// A picture big enough to be content: smaller ones are logos, icons and bullets.
+const MIN_PICTURE_SIDE = 120;
+const MIN_PICTURE_AREA = 300 * 300;
+
+// The content-sized images a page draws, directly or through a form (two
+// levels deep), as object keys ("12 0 R") so the same image on many pages is
+// recognized as one.
+function pageImageKeys(doc: PDFDocument, pageIndex: number): string[] {
+  const keys: string[] = [];
+  const imageName = PDFName.of("Image");
+  const formName = PDFName.of("Form");
+  const visit = (resources: PDFDict | undefined, depth: number) => {
+    const xobjects = resources?.lookupMaybe(PDFName.of("XObject"), PDFDict);
+    if (!xobjects) return;
+    for (const [name, value] of xobjects.entries()) {
+      const object = doc.context.lookup(value);
+      if (!(object instanceof PDFStream)) continue;
+      const subtype = object.dict.lookup(PDFName.of("Subtype"));
+      if (subtype === imageName) {
+        const width = object.dict.lookupMaybe(PDFName.of("Width"), PDFNumber)?.asNumber() ?? 0;
+        const height = object.dict.lookupMaybe(PDFName.of("Height"), PDFNumber)?.asNumber() ?? 0;
+        if (Math.min(width, height) >= MIN_PICTURE_SIDE && width * height >= MIN_PICTURE_AREA) {
+          keys.push(value instanceof PDFRef ? value.toString() : `page${pageIndex}:${name.toString()}`);
+        }
+      } else if (subtype === formName && depth < 2) {
+        visit(object.dict.lookupMaybe(PDFName.of("Resources"), PDFDict), depth + 1);
+      }
+    }
+  };
+  visit(doc.getPage(pageIndex).node.Resources(), 0);
+  return keys;
+}
+
+/**
+ * Which of `pageNums` (1-indexed) draw a real picture. An image repeated on at
+ * least half of a deck's pages (four or more) is its template, a background or
+ * a logo, and doesn't count: in real decks the template image sits on every
+ * slide, which would otherwise send every short slide for a description.
+ */
+export function pagesWithPictures(doc: PDFDocument, pageNums: readonly number[]): number[] {
+  const total = doc.getPageCount();
+  const uses = new Map<string, number>();
+  const onPage = new Map<number, string[]>();
+  const wanted = new Set(pageNums);
+  for (let index = 0; index < total; index++) {
+    const keys = [...new Set(pageImageKeys(doc, index))];
+    for (const key of keys) uses.set(key, (uses.get(key) ?? 0) + 1);
+    if (wanted.has(index + 1)) onPage.set(index + 1, keys);
+  }
+  const template = (key: string) => total >= 4 && (uses.get(key) ?? 0) >= Math.max(4, total / 2);
+  return pageNums.filter((pageNum) => (onPage.get(pageNum) ?? []).some((key) => !template(key)));
+}
+
+// Read the pictures in a PDF batch: `transcribe` pages (no usable text layer)
+// in full, and `figureCandidates` (slide-like pages with a little text) for
+// their pictures, keeping only candidates that really draw a content-sized
+// image so a text-only slide costs nothing. `charge` meters the pages about to
+// be sent, before any model call; its daily-cap error is transient, so the
+// pump re-queues the batch. Blank and declined pages are dropped. No-op when
+// no provider key is set, so local/offline runs and the eval harness work.
+export async function readPdfPages(
   bytes: ArrayBuffer,
-  pageNums: number[],
-  totalPages?: number,
-): Promise<PageText[]> {
-  if (!ocrEnabled() || pageNums.length === 0) return [];
+  transcribe: number[],
+  figureCandidates: number[],
+  totalPages: number,
+  charge: (pages: number) => Promise<void>,
+): Promise<PdfPagesRead> {
+  const none: PdfPagesRead = { transcribed: [], figures: [] };
+  if (!ocrEnabled() || (transcribe.length === 0 && figureCandidates.length === 0)) return none;
 
   if (bytes.byteLength > LARGE_PDF_BYTES) {
-    // Too big to slice within the edge CPU budget (see LARGE_PDF_BYTES). The
-    // Gemini fallback is inline-only (20 MB request cap), so a large scan is
-    // Anthropic-or-nothing; a decline here skips the pages, like elsewhere.
-    const total = totalPages ?? Math.max(...pageNums);
-    if (!ANTHROPIC_KEY || total > WHOLE_DOC_MAX_PAGES) {
+    // Too big to slice within the edge CPU budget (see LARGE_PDF_BYTES), and
+    // too big to look for pictures page by page, so every candidate goes in
+    // the one request. The Gemini fallback is inline-only (20 MB request cap),
+    // so a large scan is Anthropic-or-nothing; a decline skips the pages.
+    if (!ANTHROPIC_KEY || totalPages > WHOLE_DOC_MAX_PAGES) {
       console.warn(
-        `[polya-import] OCR skipped ${pageNums.length} page(s): file is ${
+        `[polya-import] OCR skipped ${transcribe.length + figureCandidates.length} page(s): file is ${
           Math.round(bytes.byteLength / 1048576)
-        } MB / ${total} pages, beyond what can be transcribed whole`,
+        } MB / ${totalPages} pages, beyond what can be read whole`,
       );
-      return [];
+      return none;
     }
+    await charge(transcribe.length + figureCandidates.length);
     try {
-      return await ocrWholeDocument(bytes, pageNums, total);
+      return await ocrWholeDocument(bytes, transcribe, totalPages, figureCandidates);
     } catch (err) {
       if (err instanceof OcrTransientError) throw err;
-      console.error(`[polya-import] OCR skipped pages ${pageNums.join(",")} of a large file:`, err);
-      return [];
+      console.error(`[polya-import] OCR skipped pages ${[...transcribe, ...figureCandidates].join(",")} of a large file:`, err);
+      return none;
     }
   }
 
   const src = await PDFDocument.load(bytes.slice(0), { ignoreEncryption: true });
   const total = src.getPageCount();
+  const inRange = (pageNum: number) => pageNum >= 1 && pageNum <= total;
+  const targets = transcribe.filter(inRange);
+  const figurePages = pagesWithPictures(src, figureCandidates.filter(inRange));
+  if (targets.length + figurePages.length === 0) return none;
+  await charge(targets.length + figurePages.length);
 
-  const out: PageText[] = [];
-  for (const pageNum of pageNums) {
-    const index = pageNum - 1;
-    if (index < 0 || index >= total) continue;
-
+  const slice = async (pageNum: number): Promise<Uint8Array> => {
     const doc = await PDFDocument.create();
-    const [copied] = await doc.copyPages(src, [index]);
+    const [copied] = await doc.copyPages(src, [pageNum - 1]);
     doc.addPage(copied);
-    const slice = await doc.save();
+    return await doc.save();
+  };
 
-    const text = await ocrOnePage(slice, pageNum);
-    if (text.length >= OCR_MIN_CHARS) out.push({ pageNum, text });
+  const out: PdfPagesRead = { transcribed: [], figures: [] };
+  for (const pageNum of targets) {
+    const text = await ocrOnePage(await slice(pageNum), pageNum);
+    if (text.length >= OCR_MIN_CHARS) out.transcribed.push({ pageNum, text });
+  }
+  for (const pageNum of figurePages) {
+    const pdf = await slice(pageNum);
+    const text = await firstProvider(
+      [
+        [
+          "anthropic",
+          () =>
+            anthropicTranscribe(
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: toBase64(pdf) } },
+              FIGURE_ONLY_PROMPT,
+              MAX_OUTPUT_TOKENS,
+            ),
+        ],
+        ["gemini", () => ocrWithGemini(pdf, "application/pdf", FIGURE_ONLY_PROMPT)],
+      ],
+      `the pictures on page ${pageNum}`,
+    );
+    const figures = figureLines(text);
+    if (figures) out.figures.push({ pageNum, text: figures });
   }
   return out;
 }

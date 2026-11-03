@@ -51,6 +51,11 @@ Next.js 16 app (this repo)                              Supabase (shared project
    `src/lib/photos.ts`) under `<uid>/uploads/<uuid>.jpg`, and one pump step reads it with
    `ocrImage` (`_shared/ocr.ts`: Haiku 5.5, Gemini fallback) into a single page, metered as one
    page + one OCR unit. No text → `needs_ocr`.
+   **Pictures inside PDFs**: image-only pages (< 50 chars of text) are transcribed, with a
+   `Figure:` line per picture; slide-like pages (< 400 chars) that draw a content-sized image
+   (≥ 300×300, not a template image repeated on half the deck) keep their text and gain
+   `Figure:` lines (`_shared/ocr.ts` `readPdfPages`). Files over 6 MB are read whole through the
+   Files API, up to 600 pages.
 
 5. **Course websites** — for classes that live on their own site instead of Canvas (e.g.
    `ds100.org/fa26`), `polya-import {action:site_start, url, course_id?}` crawls the site
