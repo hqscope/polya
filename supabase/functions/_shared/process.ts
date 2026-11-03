@@ -26,7 +26,7 @@ import {
 } from "./ingest.ts";
 import { extractPageRange, getPdfInfo } from "./pdf.ts";
 import type { PageText } from "./chunker.ts";
-import { ocrEnabled, ocrPdfPages, ocrProvider } from "./ocr.ts";
+import { ocrEnabled, ocrImage, ocrPdfPages, ocrProvider } from "./ocr.ts";
 import { GeminiTransientError } from "./embeddings.ts";
 import { chargeImportUnits } from "./import-caps.ts";
 import { STORAGE_FULL_MESSAGE, StorageFullError } from "./storage-quota.ts";
@@ -43,9 +43,13 @@ import type { DriveReader } from "./drive-grant.ts";
 import { newDriveReader } from "./drive-grant-store.ts";
 import { fetchSitePageText, fetchWebPdf, WEB_ORIGINS } from "./web-sources.ts";
 import {
+  IMAGE_TOO_LARGE_MESSAGE,
+  looksLikeJpeg,
   looksLikePdf,
+  MAX_IMAGE_UPLOAD_BYTES,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_PAGES,
+  UPLOAD_NOT_IMAGE_MESSAGE,
   UPLOAD_NOT_PDF_MESSAGE,
   UPLOAD_TOO_LARGE_MESSAGE,
   UPLOAD_TOO_MANY_PAGES_MESSAGE,
@@ -352,6 +356,7 @@ async function advance(
   }
   if (source.origin === "site_page") return await advanceSitePage(source);
   if (source.source_kind === "pdf") return await advancePdf(source, connection, ctx);
+  if (source.source_kind === "image") return await advanceImage(source);
   if (source.source_kind === "html") return await advanceHtml(source, connection);
   if (source.source_kind.startsWith("transcript_")) return await advanceTranscript(source);
   await failSource(source.id, `Unsupported source kind: ${source.source_kind}`);
@@ -519,6 +524,60 @@ async function advancePdf(
   await service
     .from("polya_sources")
     .update({ pages_parsed: pagesParsed, chunks_embedded: chunksEmbedded, status })
+    .eq("id", source.id);
+  return status;
+}
+
+// Photo (a student's own upload, already a shrunk JPEG): read, transcribe,
+// chunk and embed in one step, as a single page so citations open it. Metered
+// like one scanned PDF page: a page unit and an OCR unit, charged before the
+// work so a daily cap re-queues it instead of failing it.
+async function advanceImage(source: SourceRow): Promise<string> {
+  if (!source.storage_path) {
+    await failSource(source.id, "No way to fetch this file.");
+    return "failed";
+  }
+  const bytes = await downloadFromStorage(source.storage_path);
+  if (!looksLikeJpeg(new Uint8Array(bytes))) {
+    await failSource(source.id, UPLOAD_NOT_IMAGE_MESSAGE);
+    return "failed";
+  }
+  if (bytes.byteLength > MAX_IMAGE_UPLOAD_BYTES) {
+    await failSource(source.id, IMAGE_TOO_LARGE_MESSAGE);
+    return "failed";
+  }
+  const sha = await sha256Hex(bytes);
+  if (source.needs_refresh && unchangedOutput(source, sha)) {
+    await service.from("polya_sources").update({ needs_refresh: false, status: "ready" }).eq("id", source.id);
+    return "ready";
+  }
+  if (source.needs_refresh || source.chunks_embedded > 0) await clearSourceOutput(source.id);
+
+  await chargeImportUnits(service, source.user_id, "pages", 1);
+  let pages: PageText[] = [];
+  if (ocrEnabled()) {
+    await chargeImportUnits(service, source.user_id, "ocr", 1, new Date(), ocrProvider());
+    // A transient failure throws and the pump re-queues the photo.
+    const text = await ocrImage(new Uint8Array(bytes));
+    if (text) pages = [{ pageNum: 1, text }];
+  }
+
+  const inserted = await embedAndInsertChunks(source, chunksFromPages(pages), 0);
+  const procedureUnits = await embedAndInsertProcedures(source, extractProcedures(pages), inserted);
+  const chunksEmbedded = inserted + procedureUnits;
+  // No readable text: flag it so it's visible rather than silently empty.
+  const status = chunksEmbedded === 0 ? "needs_ocr" : "ready";
+  await service
+    .from("polya_sources")
+    .update({
+      content_sha256: sha,
+      size_bytes: bytes.byteLength,
+      page_count: 1,
+      pages_parsed: 1,
+      chunks_embedded: chunksEmbedded,
+      needs_refresh: false,
+      status,
+    })
     .eq("id", source.id);
   return status;
 }

@@ -39,6 +39,7 @@ export function sourceOpenLabel(origin: string | null | undefined): string {
 // the underlying transcript format; otherwise "transcript_vtt" → "vtt".
 export function sourceKindBadge(kind: string, origin?: string): string {
   if (origin === "canvas_media") return "video";
+  if (kind === "image") return "photo";
   return kind.startsWith("transcript_")
     ? kind.slice("transcript_".length)
     : kind;

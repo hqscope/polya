@@ -136,7 +136,7 @@ const CoachTurn = memo(function CoachTurn({
   activeCitation: number | null;
 }) {
   if (message.kind === "user") {
-    return <MessageBubble message={{ role: "user", content: message.text }} messageIndex={0} />;
+    return <MessageBubble message={{ role: "user", content: message.text, photos: message.photos }} messageIndex={0} />;
   }
   if (message.kind === "event") {
     return (

@@ -7,6 +7,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { streamTutor, type MasteryVerdict, type TutorSource } from "@/lib/sse";
 import { track } from "@/lib/track";
 import MessageBubble, { type ChatMessage } from "@/components/chat/MessageBubble";
+import {
+  AddPhotoButton,
+  pastedPhotos,
+  PhotoDropZone,
+  PhotoTray,
+  useChatPhotos,
+  type ChatPhoto,
+} from "@/components/chat/Photos";
 import SourceRail from "@/components/chat/SourceRail";
 import SourcePanel from "@/components/viewer/SourcePanel";
 import SourceSheet from "@/components/viewer/SourceSheet";
@@ -39,6 +47,7 @@ interface FailedTurn extends ChatFailure {
   text: string;
   attempt: boolean;
   mastery?: MasteryTurn;
+  photos: ChatPhoto[];
 }
 
 const VERDICT_BADGE: Record<MasteryVerdict, { label: string; className: string }> = {
@@ -81,6 +90,9 @@ export default function ChatView({
   // Verdict badges keyed by the assistant message index they belong to.
   const [verdicts, setVerdicts] = useState<Record<number, MasteryVerdict>>({});
   const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
+  // Photos waiting in the question box.
+  const photos = useChatPhotos();
+  const { release: releasePhotos, restore: restorePhotos } = photos;
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -149,16 +161,18 @@ export default function ChatView({
   }, [messages, streaming, failedTurn]);
 
   const send = useCallback(
-    async (text: string, attempt = false, mastery?: MasteryTurn) => {
+    async (text: string, attempt = false, mastery?: MasteryTurn, attached: ChatPhoto[] = []) => {
       const trimmed = text.trim();
-      if (!trimmed || busy) return;
+      if ((!trimmed && attached.length === 0) || busy) return;
 
       if (messages.length === 0) track("first_question_asked", courseId);
       if (!conversationId) track("conversation_started", courseId);
       if (mastery?.phase === "start") track("mastery_check_started", courseId);
 
       setFailedTurn(null);
-      setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
+      releasePhotos(attached);
+      const sent: ChatMessage = { role: "user", content: trimmed, photos: attached.length > 0 ? attached : undefined };
+      setMessages((prev) => [...prev, sent]);
       setInput("");
       setStreaming("");
       setBusy(true);
@@ -186,11 +200,11 @@ export default function ChatView({
       // return a typed question to the box, and show the notice in the reply
       // slot. Partial text from a dropped answer is discarded with it.
       const giveBack = () => {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          return last?.role === "user" && last.content === trimmed ? prev.slice(0, -1) : prev;
-        });
-        if (typed) setInput((current) => (current.trim() ? current : trimmed));
+        setMessages((prev) => (prev[prev.length - 1] === sent ? prev.slice(0, -1) : prev));
+        if (typed) {
+          setInput((current) => (current.trim() ? current : trimmed));
+          restorePhotos(attached);
+        }
       };
 
       const fail = (code?: string, message?: string) => {
@@ -201,7 +215,7 @@ export default function ChatView({
           offline: typeof navigator !== "undefined" && navigator.onLine === false,
           questionInBox: typed,
         });
-        setFailedTurn({ ...failure, text: trimmed, attempt, mastery });
+        setFailedTurn({ ...failure, text: trimmed, attempt, mastery, photos: attached });
         finish();
       };
 
@@ -210,6 +224,7 @@ export default function ChatView({
           {
             course_id: courseId,
             message: trimmed,
+            ...(attached.length > 0 ? { images: attached.map((photo) => photo.path) } : {}),
             conversation_id: conversationId,
             attempt,
             mastery,
@@ -273,7 +288,7 @@ export default function ChatView({
         fail();
       }
     },
-    [busy, courseId, conversationId, messages.length, lectureOpen, boardText],
+    [busy, courseId, conversationId, messages.length, lectureOpen, boardText, releasePhotos, restorePhotos],
   );
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
@@ -303,7 +318,7 @@ export default function ChatView({
 
   const retry = useCallback(() => {
     if (!failedTurn) return;
-    void send(failedTurn.text, failedTurn.attempt, failedTurn.mastery);
+    void send(failedTurn.text, failedTurn.attempt, failedTurn.mastery, failedTurn.photos);
   }, [failedTurn, send]);
 
   // Leaving the course mid-answer stops the stream.
@@ -312,12 +327,23 @@ export default function ChatView({
   // "Check yourself": the tutor poses one related question to try unaided.
   const startMasteryCheck = useCallback(() => {
     const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
-    const concept = (lastUserMessage?.content ?? courseName).slice(0, 80);
+    const concept = (lastUserMessage?.content.trim() || courseName).slice(0, 80);
     void send("Give me one to try on my own.", false, { phase: "start", concept });
   }, [messages, courseName, send]);
 
   const assistantTurns = messages.filter((m) => m.role === "assistant").length;
   const answeringCheck = masteryCheckId !== null;
+
+  // The question box's own send: what's typed plus any photos, once they've finished adding.
+  const submitTyped = () => {
+    if (photos.uploading) return;
+    void send(
+      input,
+      false,
+      answeringCheck ? { phase: "answer", check_id: masteryCheckId! } : undefined,
+      photos.ready,
+    );
+  };
 
 
   return (
@@ -344,7 +370,7 @@ export default function ChatView({
       />
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
+        <PhotoDropZone onFiles={(files) => void photos.add(files)} className="flex min-w-0 flex-1 flex-col">
           <div
             ref={scrollRef}
             className="min-h-0 flex-1 overflow-y-auto px-4 pt-[26px] pb-2.5 sm:px-7"
@@ -453,11 +479,7 @@ export default function ChatView({
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                void send(
-                  input,
-                  false,
-                  answeringCheck ? { phase: "answer", check_id: masteryCheckId! } : undefined,
-                );
+                submitTyped();
               }}
               className="mx-auto flex max-w-[660px] flex-col gap-[7px] rounded-[10px] border border-line bg-surface px-2.5 py-[9px] shadow-card focus-within:border-ink3"
             >
@@ -479,6 +501,7 @@ export default function ChatView({
                   />
                 </div>
               ) : null}
+              <PhotoTray photos={photos} />
               <textarea
                 ref={inputRef}
                 value={input}
@@ -486,12 +509,14 @@ export default function ChatView({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
-                    void send(
-                      input,
-                      false,
-                      answeringCheck ? { phase: "answer", check_id: masteryCheckId! } : undefined,
-                    );
+                    submitTyped();
                   }
+                }}
+                onPaste={(event) => {
+                  const pasted = pastedPhotos(event);
+                  if (pasted.length === 0) return;
+                  event.preventDefault();
+                  void photos.add(pasted);
                 }}
                 rows={1}
                 aria-label="Ask about your course"
@@ -503,6 +528,7 @@ export default function ChatView({
                 className="max-h-[120px] min-h-[22px] resize-none border-none bg-transparent px-1 pt-1 text-[13.5px] leading-normal outline-none placeholder:text-ink3"
               />
               <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+                <AddPhotoButton photos={photos} disabled={busy} />
                 {answeringCheck ? (
                   <>
                     <span className="min-w-0 truncate text-[11px] font-semibold text-accent-ink">
@@ -566,7 +592,7 @@ export default function ChatView({
                 ) : (
                   <button
                     type="submit"
-                    disabled={!input.trim()}
+                    disabled={(!input.trim() && photos.ready.length === 0) || photos.uploading}
                     aria-label="Send"
                     className="ml-auto h-[26px] w-7 shrink-0 cursor-pointer rounded-md bg-btn text-[13px] text-btn-text hover:bg-btn-hover disabled:cursor-default disabled:opacity-40"
                   >
@@ -576,7 +602,7 @@ export default function ChatView({
               </div>
             </form>
           </div>
-        </div>
+        </PhotoDropZone>
 
         <aside className="hidden min-h-0 w-[320px] shrink-0 flex-col border-l border-line bg-rail lg:flex">
           {viewing && wide ? (

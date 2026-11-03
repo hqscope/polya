@@ -46,6 +46,11 @@ Next.js 16 app (this repo)                              Supabase (shared project
 4. **Transcripts** — lecture transcripts live in Kaltura at our pilot school, so v1 accepts manual
    uploads (.txt, Kaltura .json, .vtt, .srt) on the course page; they parse into timed
    `transcript_segment` units. A Kaltura auto-fetch adapter is roadmap.
+   **Photos** (notes, handouts, a whiteboard) upload the same way as `upload_file` /
+   `source_kind = 'image'`: the browser re-encodes each one as a JPEG (long edge ≤ 2000 px,
+   `src/lib/photos.ts`) under `<uid>/uploads/<uuid>.jpg`, and one pump step reads it with
+   `ocrImage` (`_shared/ocr.ts`: Haiku 5.5, Gemini fallback) into a single page, metered as one
+   page + one OCR unit. No text → `needs_ocr`.
 
 5. **Course websites** — for classes that live on their own site instead of Canvas (e.g.
    `ds100.org/fa26`), `polya-import {action:site_start, url, course_id?}` crawls the site
@@ -121,6 +126,17 @@ The system prompt has three blocks:
 Evidence rides inside the user message in a `<course_evidence>` wrapper with explicit
 untrusted-data framing (course files are data, not instructions — prompt-injection hygiene).
 Daily metering: `polya_increment_usage`, 300 tutor turns/day, fail-open.
+
+**Photos in chat** (tutor and exam coach). The browser shrinks a picked, pasted or dropped image
+to a JPEG (long edge ≤ 1568 px) and uploads it to `<uid>/chat/<uuid>.jpg`; the request carries
+only `images: [path]` (≤ 4). The function checks each path (`_shared/chat-images.ts`), signs a
+10-minute link (`_shared/chat-photos.ts`), and sends Claude `image` blocks with `url` sources, so
+no image bytes pass through the function. Haiku 5.5 reads the photos into a short text
+(`_shared/image-query.ts`) that joins the typed message as the retrieval query, which is what
+lets the answer cite the student's own course. Paths persist on the user row as
+`meta.images`; a follow-up within the last two exchanges sees the previous photo message's
+photos again. Photos count against a shared 60/day cap and add ~1,600 tokens each to the budget
+estimate.
 
 ## Shared-project rules
 

@@ -24,9 +24,12 @@ import { createUserClient, HttpError, requireAuthUser } from "../_shared/auth-us
 import { service } from "../_shared/service.ts";
 import { trackServer } from "../_shared/events.ts";
 import { readJsonCapped } from "../_shared/read-json-capped.ts";
-import { checkTutorMessage, TUTOR_MESSAGE_MAX_CHARS } from "../_shared/tutor-limits.ts";
+import { checkMessageWithPhotos, TUTOR_MESSAGE_MAX_CHARS } from "../_shared/tutor-limits.ts";
 import { claimRateLimit, rateLimitedResponse, withinDailyCap } from "../_shared/rate-limit.ts";
 import {
+  CHAT_PHOTOS_DAILY_BUCKET,
+  CHAT_PHOTOS_DAILY_LIMIT,
+  CHAT_PHOTOS_LIMIT_MESSAGE,
   COACH_DAILY_BUCKET,
   COACH_DAILY_LIMIT,
   COACH_HOURLY_BUCKET,
@@ -44,6 +47,22 @@ import {
   estimateModelUnits,
 } from "../_shared/ai-budget.ts";
 import { retrieve } from "../_shared/retrieval.ts";
+import {
+  CHAT_IMAGE_INPUT_CHARS,
+  CHAT_IMAGES_MAX,
+  historyText,
+  PHOTOS_NEED_ACCOUNT_MESSAGE,
+  messageWithPhotos,
+  parseChatImages,
+  searchText,
+} from "../_shared/chat-images.ts";
+import { loadTurnPhotos, signChatPhotos, type TurnPhotos } from "../_shared/chat-photos.ts";
+import {
+  PHOTO_SEARCH_MAX_TOKENS,
+  PHOTO_SEARCH_MODEL,
+  photoSearchInputChars,
+  transcribePhotosForSearch,
+} from "../_shared/image-query.ts";
 import { buildSources, evidenceBlock, type EvidenceSource, type PolicyMode } from "../_shared/prompts.ts";
 import { addUsage, readSse, TurnAccumulator, ZERO_USAGE, type StreamUsage } from "../_shared/anthropic-stream.ts";
 import { COACH_TOOLS, decideNext, TOOL_KIND, validateToolInput, type ToolContext, type ToolInput, type ToolName } from "../_shared/coach-tools.ts";
@@ -108,6 +127,8 @@ interface CoachBody {
   client_today?: unknown;
   message?: unknown;
   event?: unknown;
+  // Paths of photos the student attached (`<uid>/chat/<uuid>.jpg`); checked by parseChatImages.
+  images?: unknown;
 }
 
 interface ExamRow {
@@ -182,7 +203,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   try {
     const user = await requireAuthUser(request);
-    return await handleTurn(request, user.id, body);
+    return await handleTurn(request, user.id, body, user.isAnonymous);
   } catch (error) {
     if (error instanceof HttpError) {
       if (error.status === 401) return json({ error: "Please sign in again.", code: "unauthorized" }, 401);
@@ -193,7 +214,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 });
 
-async function handleTurn(request: Request, userId: string, body: CoachBody): Promise<Response> {
+async function handleTurn(request: Request, userId: string, body: CoachBody, isAnonymous: boolean): Promise<Response> {
   // --- shape -------------------------------------------------------------------
   if (!isUuid(body.exam_id)) throw new HttpError("Missing or invalid exam.", 400);
   if (body.conversation_id !== undefined && body.conversation_id !== null && !isUuid(body.conversation_id)) {
@@ -201,15 +222,26 @@ async function handleTurn(request: Request, userId: string, body: CoachBody): Pr
   }
   const event = body.event === undefined || body.event === null ? null : readEvent(body.event);
   if (body.event !== undefined && body.event !== null && !event) throw new HttpError("That action isn't recognized.", 400);
+  const photoCheck = parseChatImages(userId, body.images);
+  if (!photoCheck.ok) {
+    throw new HttpError(
+      photoCheck.reason === "too_many"
+        ? `You can add up to ${CHAT_IMAGES_MAX} photos to a message.`
+        : "That photo isn't available. Try adding it again.",
+      400,
+    );
+  }
+  const photoPaths = photoCheck.paths;
+  if (photoPaths.length > 0 && isAnonymous) throw new HttpError(PHOTOS_NEED_ACCOUNT_MESSAGE, 401);
   let message: string | null = null;
   if (!event) {
-    const check = checkTutorMessage(body.message);
+    const check = checkMessageWithPhotos(body.message, photoPaths.length);
     if (check === "missing") throw new HttpError("Missing message.", 400);
     if (check === "too_long") {
       throw new HttpError(`That message is too long. Please keep it under ${TUTOR_MESSAGE_MAX_CHARS.toLocaleString("en-US")} characters.`, 413);
     }
-    message = (body.message as string).trim();
-  } else if (body.message !== undefined && body.message !== null) {
+    message = typeof body.message === "string" ? body.message.trim() : "";
+  } else if ((body.message !== undefined && body.message !== null) || photoPaths.length > 0) {
     throw new HttpError("Send a message or an action, not both.", 400);
   }
   const today = studentToday(body.client_today);
@@ -256,13 +288,40 @@ async function handleTurn(request: Request, userId: string, body: CoachBody): Pr
 
   const target = await loadEventTarget(userId, exam, event, conversationId);
 
+  // This message's photos must all be there before anything is counted.
+  const signedPhotos = await signChatPhotos(photoPaths);
+  if (!signedPhotos) throw new HttpError("That photo isn't available. Try adding it again.", 400);
+
   // --- daily cap, then budgets (all fail closed) -------------------------------
   if (!(await withinDailyCap(service, userId, COACH_DAILY_BUCKET, COACH_DAILY_LIMIT))) {
     return rateLimitedResponse({ message: "You've reached today's coaching limit. It resets tomorrow.", headers: corsHeaders });
   }
+  // Photos have their own daily cap, shared with the tutor.
+  if (
+    photoPaths.length > 0 &&
+    !(await withinDailyCap(service, userId, CHAT_PHOTOS_DAILY_BUCKET, CHAT_PHOTOS_DAILY_LIMIT, photoPaths.length))
+  ) {
+    return rateLimitedResponse({ message: CHAT_PHOTOS_LIMIT_MESSAGE, headers: corsHeaders });
+  }
 
   const context = await loadContext(userId, exam, conversationId, today, target);
-  const retrievalQuery = (message ?? target.query ?? exam.title).slice(0, 1_500);
+  // A typed message also sees the photos from the student's previous photo
+  // message while the conversation is still on them; an action never does.
+  let photos: TurnPhotos = { current: [], earlier: [], blocks: [] };
+  if (!event) photos = (await loadTurnPhotos(userId, photoPaths, context.recentRows, signedPhotos)) ?? photos;
+  const photoChars = (photos.current.length + photos.earlier.length) * CHAT_IMAGE_INPUT_CHARS;
+
+  // What this message's photos say, for the course search only (the coach
+  // reads the photos themselves). Charged up front like every model call.
+  let transcript = "";
+  if (photos.current.length > 0) {
+    const units = estimateModelUnits(PHOTO_SEARCH_MODEL, photoSearchInputChars(photos.current.length), PHOTO_SEARCH_MAX_TOKENS);
+    if ((await claimAiBudget(service, "anthropic", userId, units)) !== "ok") return aiBusyResponse({ headers: corsHeaders });
+    transcript = await transcribePhotosForSearch(photos.current);
+  }
+  const retrievalQuery = (
+    (message !== null ? searchText(message, transcript) : "") || target.query || exam.title
+  ).slice(0, 1_500);
   if ((await claimAiBudget(service, "gemini", userId, estimateEmbeddingUnits(retrievalQuery.length))) !== "ok") {
     return aiBusyResponse({ headers: corsHeaders });
   }
@@ -275,15 +334,18 @@ async function handleTurn(request: Request, userId: string, body: CoachBody): Pr
   const userTurn = buildCoachUserTurn({
     examState: context.examState,
     evidence: evidenceBlock(sources, units),
-    message: message ?? undefined,
+    message: message !== null ? messageWithPhotos(message, photos.current.length, photos.earlier.length) : undefined,
     eventText: target.eventText ?? undefined,
   });
   const messages: unknown[] = [
     ...context.history,
-    { role: "user", content: [{ type: "text", text: userTurn, cache_control: { type: "ephemeral" } }] },
+    {
+      role: "user",
+      content: [...photos.blocks, { type: "text", text: userTurn, cache_control: { type: "ephemeral" } }],
+    },
   ];
   const firstBody = requestBody(systemBlocks, messages, false);
-  if ((await claimModelBudget(userId, firstBody)) !== "ok") return aiBusyResponse({ headers: corsHeaders });
+  if ((await claimModelBudget(userId, firstBody, photoChars)) !== "ok") return aiBusyResponse({ headers: corsHeaders });
 
   if (!conversationId) {
     const { data, error } = await service
@@ -308,6 +370,8 @@ async function handleTurn(request: Request, userId: string, body: CoachBody): Pr
     userClient,
     context,
     studentMessage: message,
+    photoPaths,
+    photoChars,
     eventMeta: target.meta,
     eventIds: target.ids,
   });
@@ -463,6 +527,8 @@ interface CoachContext {
   inventory: ReturnType<typeof buildInventory>;
   examState: string;
   history: { role: "user" | "assistant"; content: string }[];
+  /** The conversation's latest stored rows, newest first (for earlier photos). */
+  recentRows: { role: string; content: string; meta: unknown }[];
   progressReady: (topicId: string) => boolean;
 }
 
@@ -514,7 +580,7 @@ async function loadContext(
     conversationId
       ? service
         .from("polya_messages")
-        .select("role, content")
+        .select("role, content, meta")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: false })
         .limit(HISTORY_ROWS)
@@ -594,7 +660,7 @@ async function loadContext(
     });
   }
 
-  const historyData = ((historyRows as { data: unknown }).data ?? []) as { role: string; content: string }[];
+  const historyData = ((historyRows as { data: unknown }).data ?? []) as { role: string; content: string; meta: unknown }[];
   const mode = ((policy.data as { mode?: string } | null)?.mode ?? "guided") as PolicyMode;
   return {
     courseName: ((course.data as { name?: string } | null)?.name) ?? "your course",
@@ -606,7 +672,13 @@ async function loadContext(
     plan,
     inventory,
     examState,
-    history: flattenHistory([...historyData].reverse()),
+    history: flattenHistory(
+      [...historyData].reverse().map((row) => ({
+        role: row.role,
+        content: row.role === "user" ? historyText(row.content, row.meta) : row.content,
+      })),
+    ),
+    recentRows: historyData,
     progressReady: (topicId) => {
       const info = stages.get(topicId);
       return info ? canMarkExamReady(info.progress) : false;
@@ -685,8 +757,10 @@ function requestBody(systemBlocks: unknown[], messages: unknown[], last: boolean
   };
 }
 
-async function claimModelBudget(userId: string, body: Record<string, unknown>) {
-  const inputChars = JSON.stringify({ system: body.system, tools: body.tools, messages: body.messages }).length;
+// Photos go to Claude as links, so their size isn't in the JSON: `photoChars`
+// adds what they really cost.
+async function claimModelBudget(userId: string, body: Record<string, unknown>, photoChars = 0) {
+  const inputChars = JSON.stringify({ system: body.system, tools: body.tools, messages: body.messages }).length + photoChars;
   return await claimAiBudget(service, "anthropic", userId, estimateModelUnits(COACH_MODEL, inputChars, COACH_MAX_TOKENS));
 }
 
@@ -703,6 +777,9 @@ interface TurnArgs {
   userClient: ReturnType<typeof createUserClient>;
   context: CoachContext;
   studentMessage: string | null;
+  photoPaths: string[];
+  /** What this turn's photos add to every model call's input, for the budget. */
+  photoChars: number;
   eventMeta: EventMeta | null;
   eventIds: { questionId: string | null; attemptId: string | null };
 }
@@ -769,7 +846,7 @@ function streamTurn(args: TurnArgs): Response {
           if (callIndex > 0 && TURN_DEADLINE_MS - elapsed < MIN_CALL_MS) break;
           const last = callIndex === COACH_MAX_CALLS - 1;
           const body = requestBody(args.systemBlocks, args.messages, last);
-          if (callIndex > 0 && (await claimModelBudget(args.userId, body)) !== "ok") {
+          if (callIndex > 0 && (await claimModelBudget(args.userId, body, args.photoChars)) !== "ok") {
             failure = { error: AI_BUSY_MESSAGE, code: "busy" };
             break;
           }
@@ -869,6 +946,7 @@ function streamTurn(args: TurnArgs): Response {
         kind: args.eventMeta?.kind ?? "message",
         calls,
         tools: toolsUsed,
+        photos: args.photoPaths.length,
         failed: failure?.code ?? null,
         input_tokens: usage.input_tokens,
         cache_read_tokens: usage.cache_read_input_tokens,
@@ -1112,7 +1190,7 @@ async function persist(
       conversation_id: args.conversationId,
       role: "user",
       content: args.studentMessage ?? (args.eventMeta ? eventContent(args.eventMeta) : ""),
-      meta: args.eventMeta,
+      meta: args.eventMeta ?? (args.photoPaths.length > 0 ? { images: args.photoPaths } : null),
     });
     const { data } = await service
       .from("polya_messages")

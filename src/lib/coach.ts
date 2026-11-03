@@ -12,6 +12,7 @@ import {
   type StudyPlan,
 } from "../../supabase/functions/_shared/coach-blocks.ts";
 import type { PartKey, PartResponse, PartResult } from "../../supabase/functions/_shared/study-grade.ts";
+import { imagesFromMeta } from "../../supabase/functions/_shared/chat-images.ts";
 import type { TutorSource } from "./sse.ts";
 import type { GradedAttempt, MockRow, StudyErrorRow, TopicRow } from "./study.ts";
 
@@ -19,7 +20,7 @@ export type { CoachBlock, CoachSegment, EventMeta, StudyPlan };
 export { parseCoachBlock };
 
 export type CoachMessage =
-  | { localId: string; kind: "user"; text: string }
+  | { localId: string; kind: "user"; text: string; photos?: { path: string; url?: string }[] }
   | { localId: string; kind: "event"; label: string }
   | { localId: string; kind: "assistant"; segments: CoachSegment[]; sources: TutorSource[]; streaming?: boolean };
 
@@ -65,7 +66,8 @@ export function toCoachMessages(rows: readonly StoredMessage[]): CoachMessage[] 
       if (label) out.push({ localId: row.id, kind: "event", label });
       continue;
     }
-    out.push({ localId: row.id, kind: "user", text: row.content });
+    const photos = imagesFromMeta(row.meta).map((path) => ({ path }));
+    out.push({ localId: row.id, kind: "user", text: row.content, ...(photos.length > 0 ? { photos } : {}) });
   }
   return out;
 }

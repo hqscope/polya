@@ -28,6 +28,7 @@ interface SourceMeta {
 export default function SourcePanel({ source, onBack, backLabel = "← All sources" }: Props) {
   const [meta, setMeta] = useState<SourceMeta | null>(null);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [bodyText, setBodyText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,6 +37,7 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
     (async () => {
       setError(null);
       setSignedUrl(null);
+      setPhotoUrl(null);
       setBodyText(null);
       const supabase = createBrowserSupabaseClient();
 
@@ -51,7 +53,15 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
       }
       setMeta(row as SourceMeta);
 
-      if (row.source_kind === "pdf" && row.storage_path) {
+      if (row.source_kind === "image" && row.storage_path) {
+        // A photo the student added: show the photo itself.
+        const { data: signed } = await supabase.storage
+          .from("polya_documents")
+          .createSignedUrl(row.storage_path, 300);
+        if (cancelled) return;
+        if (signed?.signedUrl) setPhotoUrl(signed.signedUrl);
+        else setError("Couldn't load the photo.");
+      } else if (row.source_kind === "pdf" && row.storage_path) {
         const { data: signed } = await supabase.storage
           .from("polya_documents")
           .createSignedUrl(row.storage_path, 300);
@@ -126,6 +136,13 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
           />
         ) : null}
 
+        {photoUrl ? (
+          <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto rounded-lg border border-line bg-surface p-2">
+            {/* eslint-disable-next-line @next/next/no-img-element -- a short-lived private link can't go through image optimization */}
+            <img src={photoUrl} alt={source.title} className="h-auto max-w-full rounded" />
+          </div>
+        ) : null}
+
         {bodyText ? (
           <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-surface p-4 shadow-card">
             <p className="m-0 text-[12.5px] leading-[1.7] whitespace-pre-wrap text-ink2">
@@ -134,14 +151,14 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
           </div>
         ) : null}
 
-        {!signedUrl && !bodyText && !error ? (
+        {!signedUrl && !photoUrl && !bodyText && !error ? (
           <p className="m-0 px-1 text-[12.5px] text-ink3">Opening…</p>
         ) : null}
       </div>
 
       {/* Phone browsers don't show a PDF inside the page (or show only its
           first page), so the PDF can always open on its own too. */}
-      {signedUrl || meta?.canvas_url ? (
+      {signedUrl || photoUrl || meta?.canvas_url ? (
         <div className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-t border-line-soft px-3.5 py-2.5">
           {signedUrl ? (
             <a
@@ -151,6 +168,11 @@ export default function SourcePanel({ source, onBack, backLabel = "← All sourc
               className="text-[12px] font-semibold"
             >
               Open the PDF ↗
+            </a>
+          ) : null}
+          {photoUrl ? (
+            <a href={photoUrl} target="_blank" rel="noreferrer" className="text-[12px] font-semibold">
+              Open the photo ↗
             </a>
           ) : null}
           {meta?.canvas_url ? (

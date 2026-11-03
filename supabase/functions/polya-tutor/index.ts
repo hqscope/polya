@@ -10,10 +10,34 @@ import { assertConversationOwned, assertCourseOwned } from "../_shared/authz.ts"
 import { trackServer } from "../_shared/events.ts";
 import { service } from "../_shared/service.ts";
 import { checkAndCountTutorUsage } from "../_shared/usage.ts";
-import { checkTutorMessage, TUTOR_MESSAGE_MAX_CHARS } from "../_shared/tutor-limits.ts";
+import { checkMessageWithPhotos, TUTOR_MESSAGE_MAX_CHARS } from "../_shared/tutor-limits.ts";
 import { aiBusyResponse, claimAiBudget, estimateModelUnits } from "../_shared/ai-budget.ts";
-import { claimRateLimit } from "../_shared/rate-limit.ts";
-import { HOUR_SECONDS, TUTOR_HOURLY_BUCKET, TUTOR_HOURLY_LIMIT } from "../_shared/polya-rate-limits.ts";
+import { claimRateLimit, withinDailyCap } from "../_shared/rate-limit.ts";
+import {
+  CHAT_PHOTOS_DAILY_BUCKET,
+  CHAT_PHOTOS_DAILY_LIMIT,
+  CHAT_PHOTOS_LIMIT_MESSAGE,
+  HOUR_SECONDS,
+  TUTOR_HOURLY_BUCKET,
+  TUTOR_HOURLY_LIMIT,
+} from "../_shared/polya-rate-limits.ts";
+import {
+  CHAT_IMAGE_INPUT_CHARS,
+  CHAT_IMAGES_MAX,
+  historyText,
+  PHOTOS_NEED_ACCOUNT_MESSAGE,
+  messageWithPhotos,
+  parseChatImages,
+  photoTitle,
+  searchText,
+} from "../_shared/chat-images.ts";
+import { loadTurnPhotos, type TurnPhotos } from "../_shared/chat-photos.ts";
+import {
+  PHOTO_SEARCH_MAX_TOKENS,
+  PHOTO_SEARCH_MODEL,
+  photoSearchInputChars,
+  transcribePhotosForSearch,
+} from "../_shared/image-query.ts";
 import { retrieve } from "../_shared/retrieval.ts";
 import {
   buildSources,
@@ -47,7 +71,9 @@ const ANTHROPIC_KEY = (globalThis as { Deno?: { env: { get(k: string): string | 
 interface TutorBody {
   conversation_id?: string;
   course_id: string;
-  message: string;
+  message?: string;
+  // Paths of photos the student attached (`<uid>/chat/<uuid>.jpg`); checked by parseChatImages.
+  images?: unknown;
   attempt?: boolean;
   model?: string;
   // Lecture Mode. Either a plain string (the board text box) or a structured
@@ -89,7 +115,17 @@ Deno.serve(async (request: Request): Promise<Response> => {
   } catch {
     return json({ error: "Something went wrong sending that. Please try again.", code: "bad_request" }, 400);
   }
-  const messageCheck = checkTutorMessage(body?.message);
+  const photoCheck = parseChatImages(user.id, body?.images);
+  if (!photoCheck.ok) {
+    return photoCheck.reason === "too_many"
+      ? json({ error: `You can add up to ${CHAT_IMAGES_MAX} photos to a message.`, code: "bad_request" }, 400)
+      : json({ error: "That photo isn't available. Try adding it again.", code: "bad_request" }, 400);
+  }
+  const photoPaths = photoCheck.paths;
+  if (photoPaths.length > 0 && user.isAnonymous) {
+    return json({ error: PHOTOS_NEED_ACCOUNT_MESSAGE, code: "unauthorized" }, 401);
+  }
+  const messageCheck = checkMessageWithPhotos(body?.message, photoPaths.length);
   if (!body?.course_id || messageCheck === "missing") {
     return json({ error: "Missing course or message.", code: "bad_request" }, 400);
   }
@@ -102,6 +138,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       413,
     );
   }
+  const message = typeof body.message === "string" ? body.message.trim() : "";
   const model = body.model && MODEL_ALLOWLIST.has(body.model) ? body.model : TUTOR_MODEL;
 
   // A-17: hourly per-user window under the daily meter below. Keyed on the
@@ -135,6 +172,20 @@ Deno.serve(async (request: Request): Promise<Response> => {
     throw error;
   }
 
+  // Recent history (newest first) for an existing conversation, then this
+  // turn's photos plus any from the previous photo message still in play.
+  // Both run before metering so a missing photo costs the student nothing.
+  const userClient = createUserClient(request);
+  const recentRows = body.conversation_id ? await loadRecentRows(userClient, body.conversation_id) : [];
+  let photos: TurnPhotos = { current: [], earlier: [], blocks: [] };
+  if (photoPaths.length > 0 || recentRows.length > 0) {
+    const loaded = await loadTurnPhotos(user.id, photoPaths, recentRows);
+    if (!loaded) {
+      return json({ error: "That photo isn't available. Try adding it again.", code: "bad_request" }, 400);
+    }
+    photos = loaded;
+  }
+
   // A mastery answer is the student working unaided, so the room is withheld
   // on that turn: it would invalidate the check, and it would hand whatever is
   // on a projector screen a route into the VERDICT control channel below.
@@ -155,27 +206,41 @@ Deno.serve(async (request: Request): Promise<Response> => {
     );
   }
 
+  // Photos have their own daily cap, shared with the exam coach.
+  if (
+    photoPaths.length > 0 &&
+    !(await withinDailyCap(service, user.id, CHAT_PHOTOS_DAILY_BUCKET, CHAT_PHOTOS_DAILY_LIMIT, photoPaths.length))
+  ) {
+    return json({ error: CHAT_PHOTOS_LIMIT_MESSAGE, code: "rate_limited" }, 429);
+  }
+
   // Project-wide daily Claude budget (R-5), charged before retrieval at this
   // turn's ceiling: evidence, history and charter (TUTOR_BASE_INPUT_CHARS)
-  // plus the message and any lecture context, and the full output allowance.
+  // plus the message, any lecture context and photos, and the full output
+  // allowance; plus the quick read of this turn's photos for the search.
   // Fails closed: over budget or a metering error both get the busy 503.
+  const photoCount = photos.current.length + photos.earlier.length;
   const budget = await claimAiBudget(
     service,
     "anthropic",
     user.id,
     estimateModelUnits(
       model,
-      TUTOR_BASE_INPUT_CHARS + body.message.length + (effectiveLecture ? LECTURE_CONTEXT_MAX_CHARS : 0),
+      TUTOR_BASE_INPUT_CHARS + message.length + (effectiveLecture ? LECTURE_CONTEXT_MAX_CHARS : 0) +
+        photoCount * CHAT_IMAGE_INPUT_CHARS,
       MAX_TOKENS,
-    ),
+    ) +
+      (photos.current.length > 0
+        ? estimateModelUnits(PHOTO_SEARCH_MODEL, photoSearchInputChars(photos.current.length), PHOTO_SEARCH_MAX_TOKENS)
+        : 0),
   );
   if (budget !== "ok") {
     return aiBusyResponse({ headers: corsHeaders });
   }
 
-  const userClient = createUserClient(request);
-
-  // Policy (default guided) + course name.
+  // Policy (default guided) + course name, and what this turn's photos say
+  // (for the course search only; the answer reads the photos themselves).
+  const transcriptPromise = transcribePhotosForSearch(photos.current);
   const [{ data: course }, { data: policy }] = await Promise.all([
     userClient.from("polya_courses").select("name").eq("id", body.course_id).maybeSingle(),
     userClient
@@ -188,24 +253,22 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const studyNote = policy?.instructor_note ?? null; // column name is historical
   const courseName = course?.name ?? "your course";
 
-  // Conversation (create if new) + recent history.
-  const conversationId = await ensureConversation(user.id, body);
-  const { data: historyRows } = await userClient
-    .from("polya_messages")
-    .select("role, content")
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: false })
-    .limit(HISTORY_TURNS);
-  const history = ((historyRows ?? []) as Array<{ role: string; content: string }>)
-    .reverse()
-    .map((row) => ({ role: row.role as "user" | "assistant", content: row.content }));
+  const transcript = await transcriptPromise;
+
+  // Conversation (create if new) + recent history (oldest first for the model).
+  const conversationId = await ensureConversation(user.id, body, photoTitle(message, transcript));
+  const history = [...recentRows].reverse().map((row) => ({
+    role: row.role as "user" | "assistant",
+    content: row.role === "user" ? historyText(row.content, row.meta) : row.content,
+  }));
 
   // Intent + retrieval (practice mode hides solution keys). A mastery-answer
   // turn retrieves on the check question — that's what the evidence must judge
-  // the attempt against.
-  const intent = classifyIntent(body.message, body.attempt);
+  // the attempt against. A photo's text joins the typed message for both.
+  const intent = classifyIntent(message || transcript, body.attempt);
   const excludeRoles = mode === "practice" ? ["solution_key"] : [];
-  const retrievalQuery = mastery?.phase === "answer" ? mastery.question : body.message;
+  // A photo with no text that couldn't be read still needs something to search on.
+  const retrievalQuery = mastery?.phase === "answer" ? mastery.question : searchText(message, transcript) || courseName;
   const units = await retrieve(userClient, body.course_id, retrievalQuery, excludeRoles);
   const sources = buildSources(units);
 
@@ -224,9 +287,10 @@ Deno.serve(async (request: Request): Promise<Response> => {
     lecture: effectiveLecture,
     sources,
     units,
-    message: body.message.trim(),
+    message: messageWithPhotos(message, photos.current.length, photos.earlier.length),
   });
-  const messages = [...history, { role: "user" as const, content: userTurn }];
+  const userContent = photos.blocks.length > 0 ? [...photos.blocks, { type: "text", text: userTurn }] : userTurn;
+  const messages = [...history, { role: "user" as const, content: userContent }];
 
   return streamTutor({
     userId: user.id,
@@ -237,7 +301,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     messages,
     sources,
     mode,
-    studentMessage: body.message.trim(),
+    studentMessage: message,
+    photoPaths,
     mastery,
     lecture: effectiveLecture,
   });
@@ -266,11 +331,25 @@ async function resolveMastery(userId: string, body: TutorBody): Promise<MasteryC
   return { phase: "answer", concept: "", checkId: data.id as string, question: data.question as string };
 }
 
+// The conversation's most recent stored rows, newest first. Read as the
+// student (RLS), after assertConversationOwned.
+async function loadRecentRows(
+  userClient: ReturnType<typeof createUserClient>,
+  conversationId: string,
+): Promise<Array<{ role: string; content: string; meta: unknown }>> {
+  const { data } = await userClient
+    .from("polya_messages")
+    .select("role, content, meta")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(HISTORY_TURNS);
+  return (data ?? []) as Array<{ role: string; content: string; meta: unknown }>;
+}
+
 // Ownership of a client-supplied conversation_id is asserted up front in the
 // request handler (assertConversationOwned) before this runs.
-async function ensureConversation(userId: string, body: TutorBody): Promise<string> {
+async function ensureConversation(userId: string, body: TutorBody, title: string): Promise<string> {
   if (body.conversation_id) return body.conversation_id;
-  const title = body.message.trim().slice(0, 60);
   const { data, error } = await service
     .from("polya_conversations")
     .insert({ user_id: userId, course_id: body.course_id, title })
@@ -286,10 +365,12 @@ interface StreamArgs {
   conversationId: string;
   model: string;
   systemBlocks: unknown[];
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  // The newest user turn is content blocks when it carries photos.
+  messages: Array<{ role: "user" | "assistant"; content: unknown }>;
   sources: EvidenceSource[];
   mode: PolicyMode;
   studentMessage: string;
+  photoPaths: string[];
   mastery: MasteryContext | null;
   lecture: LectureContext | null;
 }
@@ -446,6 +527,7 @@ function streamTutor(args: StreamArgs): Response {
           (args.lecture?.frames.reduce((sum, frame) => sum + frame.length, 0) ?? 0),
         context_frames: args.lecture?.frames.length ?? 0,
         context_truncated: args.lecture?.truncated ?? false,
+        photos: args.photoPaths.length,
       });
       if (args.mastery?.phase === "answer" && verdict) {
         await trackServer(args.userId, "mastery_check_completed", args.courseId, { verdict });
@@ -516,6 +598,7 @@ async function persist(args: StreamArgs, assistantText: string, usage: unknown):
       conversation_id: args.conversationId,
       role: "user",
       content: args.studentMessage,
+      meta: args.photoPaths.length > 0 ? { images: args.photoPaths } : null,
     });
     const { data } = await service
       .from("polya_messages")

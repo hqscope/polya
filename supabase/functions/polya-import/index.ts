@@ -19,9 +19,12 @@ import {
   type KalturaMediaEntry,
 } from "../_shared/kaltura.ts";
 import { classifyContentRole } from "../_shared/content-roles.ts";
+import { PHOTOS_NEED_ACCOUNT_MESSAGE } from "../_shared/chat-images.ts";
 import {
   cleanUploadTitle,
+  IMAGE_TOO_LARGE_MESSAGE,
   isValidUploadPath,
+  MAX_IMAGE_UPLOAD_BYTES,
   MAX_UPLOAD_BYTES,
   UPLOAD_TOO_LARGE_MESSAGE,
   uploadSpecFor,
@@ -328,7 +331,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       case "status_all":
         return await handleStatusAll(user.id);
       case "add_upload":
-        return await handleAddUpload(user.id, body);
+        return await handleAddUpload(user.id, body, user.isAnonymous);
       case "process":
         return await handleProcess(user.id, body.course_id);
       case "retry_failed":
@@ -1033,7 +1036,7 @@ async function handleStatus(userId: string, courseId: string): Promise<Response>
   return json({ course_id: courseId, progress, sources: sources ?? [] });
 }
 
-async function handleAddUpload(userId: string, body: UploadBody): Promise<Response> {
+async function handleAddUpload(userId: string, body: UploadBody, isAnonymous: boolean): Promise<Response> {
   // The client uploaded the file to storage under its own uid prefix; register
   // it as a queued source for the process pump to pick up. The ids, kind, path
   // and title all come from the client, so check each before the service-role
@@ -1041,6 +1044,10 @@ async function handleAddUpload(userId: string, body: UploadBody): Promise<Respon
   const spec = uploadSpecFor(body.kind);
   if (!spec) {
     return json({ error: "That kind of file can't be added.", code: "bad_request" }, 400);
+  }
+  // Photos need a real account, not an anonymous session.
+  if (spec.sourceKind === "image" && isAnonymous) {
+    return json({ error: PHOTOS_NEED_ACCOUNT_MESSAGE, code: "unauthorized" }, 401);
   }
   await assertCourseOwned(userId, body.course_id);
   assertUserStoragePath(userId, body.storage_path);
@@ -1059,6 +1066,9 @@ async function handleAddUpload(userId: string, body: UploadBody): Promise<Respon
   }
   if (sizeBytes > MAX_UPLOAD_BYTES) {
     return json({ error: UPLOAD_TOO_LARGE_MESSAGE, code: "too_large" }, 413);
+  }
+  if (spec.sourceKind === "image" && sizeBytes > MAX_IMAGE_UPLOAD_BYTES) {
+    return json({ error: IMAGE_TOO_LARGE_MESSAGE, code: "too_large" }, 413);
   }
 
   const isFile = spec.origin === "upload_file";

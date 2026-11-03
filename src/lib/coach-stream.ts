@@ -20,6 +20,8 @@ export interface CoachRequest {
   conversation_id?: string;
   client_today: string;
   message?: string;
+  /** Paths of photos attached to this message. */
+  images?: string[];
   event?: CoachEvent;
 }
 

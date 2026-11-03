@@ -31,6 +31,14 @@ const question = (id: string) => ({
   block: { type: "question" as const, question: { id, stem: "S", parts: [{ kind: "numeric" as const, prompt: "P" }], difficulty: 2 as const, hide_topic: false } },
 });
 
+test("a stored photo message comes back with its photos", () => {
+  const path = "u/chat/00000001-aaaa-bbbb-cccc-dddddddddddd.jpg";
+  const [message] = toCoachMessages([
+    { id: "1", role: "user", content: "", sources: [], blocks: null, meta: { images: [path] } },
+  ]);
+  assert.deepEqual(message, { localId: "1", kind: "user", text: "", photos: [{ path }] });
+});
+
 test("stored rows become a thread: text and cards in order, clicks as small lines, opening hidden", () => {
   const messages = toCoachMessages([
     { id: "1", role: "user", content: "(Opened the exam coach.)", sources: [], blocks: null, meta: { kind: "open" } },

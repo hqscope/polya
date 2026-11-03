@@ -10,6 +10,7 @@ import {
   loadHandler,
   rpcName,
   setBackend,
+  TEST_ANON_JWT,
   TEST_USER_ID,
   TEST_USER_JWT,
 } from "../_shared/test-serve.ts";
@@ -104,6 +105,42 @@ Deno.test("no session is still a 401, before the limiter", async () => {
     new Request(URL_, { method: "POST", body: JSON.stringify({ course_id: COURSE_ID, message: "hi" }) }),
   );
   assertEquals(response.status, 401);
+  await response.body?.cancel();
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("photos need a real account: an anonymous session is refused before any work", async () => {
+  const calls = backend(() => jsonResponse(true));
+  const response = await handler(
+    new Request(URL_, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TEST_ANON_JWT}` },
+      body: JSON.stringify({
+        course_id: COURSE_ID,
+        message: "What's this?",
+        images: [`${TEST_USER_ID}/chat/00000001-aaaa-bbbb-cccc-dddddddddddd.jpg`],
+      }),
+    }),
+  );
+  assertEquals(response.status, 401);
+  assertEquals((await response.json()).error, "Sign in to add photos.");
+  assertEquals(calls.length, 0, "no limiter, ownership, meter or model work");
+});
+
+Deno.test("photos from someone else's folder are refused before any work", async () => {
+  const calls = backend(() => jsonResponse(true));
+  const response = await handler(
+    new Request(URL_, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TEST_USER_JWT}` },
+      body: JSON.stringify({
+        course_id: COURSE_ID,
+        message: "What's this?",
+        images: ["00000000-0000-4000-8000-000000000999/chat/00000001-aaaa-bbbb-cccc-dddddddddddd.jpg"],
+      }),
+    }),
+  );
+  assertEquals(response.status, 400);
   await response.body?.cancel();
   assertEquals(calls.length, 0);
 });

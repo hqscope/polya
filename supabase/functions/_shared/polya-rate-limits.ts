@@ -77,6 +77,15 @@ export const TUTOR_HOURLY_LIMIT = 40;
 export const TUTOR_HOURLY_BUCKET = "polya-tutor:hour";
 
 // ---------------------------------------------------------------------------
+// Photos attached to tutor and coach messages, shared across both: each photo
+// is about 1,600 input tokens on every turn it's shown, plus one cheap read
+// for the course search. 60 a day is a heavy study day of photographed problems.
+// ---------------------------------------------------------------------------
+export const CHAT_PHOTOS_DAILY_LIMIT = 60;
+export const CHAT_PHOTOS_DAILY_BUCKET = "polya-chat:photos:day";
+export const CHAT_PHOTOS_LIMIT_MESSAGE = "You've added a lot of photos today. You can add more tomorrow, or type the problem out.";
+
+// ---------------------------------------------------------------------------
 // polya-search: the daily window over its 120/hr (5x the hourly, the same
 // ratio as gemini-proxy's 60/hr and 300/day).
 // ---------------------------------------------------------------------------

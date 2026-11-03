@@ -6,6 +6,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import CoachRail, { type RailOverride, type RailTab } from "@/components/coach/CoachRail";
 import CoachThread, { type CardState, type Shared } from "@/components/coach/CoachThread";
 import { QuickReplies, StageBadge, type TrackerTopic } from "@/components/coach/blocks";
+import {
+  AddPhotoButton,
+  pastedPhotos,
+  PhotoDropZone,
+  PhotoTray,
+  useChatPhotos,
+  type ChatPhoto,
+} from "@/components/chat/Photos";
 import ExamFiles from "@/components/study/ExamFiles";
 import ExamForm from "@/components/study/ExamForm";
 import PracticeSession from "@/components/study/PracticeSession";
@@ -67,7 +75,7 @@ interface Props {
   reviewMockId: string | null;
 }
 
-type Turn = { message: string } | { event: CoachEvent; label: string | null };
+type Turn = { message: string; photos?: ChatPhoto[] } | { event: CoachEvent; label: string | null };
 type Failure = { message: string; canRetry: boolean; turn: Turn };
 
 const TOPIC_SELECT = "id, position, title, summary, key_formulas, source_ids, origin, stage";
@@ -119,6 +127,9 @@ export default function CoachView(props: Props) {
   const [failure, setFailure] = useState<Failure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  // Photos waiting in the message box.
+  const photos = useChatPhotos();
+  const { release: releasePhotos, restore: restorePhotos } = photos;
   const [tab, setTab] = useState<RailTab>("plan");
   const [override, setOverride] = useState<RailOverride>(null);
   const [sheet, setSheet] = useState<"rail" | "details" | null>(null);
@@ -190,7 +201,7 @@ export default function CoachView(props: Props) {
       const promptId = `local-${n}-in`;
       const replyId = `local-${n}-out`;
       const prompt: CoachMessage | null = "message" in turn
-        ? { localId: promptId, kind: "user", text: turn.message }
+        ? { localId: promptId, kind: "user", text: turn.message, ...(turn.photos?.length ? { photos: turn.photos } : {}) }
         : turn.label
         ? { localId: promptId, kind: "event", label: turn.label }
         : null;
@@ -199,7 +210,10 @@ export default function CoachView(props: Props) {
         ...(prompt ? [prompt] : []),
         { localId: replyId, kind: "assistant", segments: [], sources: [], streaming: true },
       ]);
-      if ("message" in turn) setInput("");
+      if ("message" in turn) {
+        setInput("");
+        releasePhotos(turn.photos ?? []);
+      }
 
       const update = (fn: (m: Extract<CoachMessage, { kind: "assistant" }>) => CoachMessage) =>
         setMessages((prev) => prev.map((m) => (m.localId === replyId && m.kind === "assistant" ? fn(m) : m)));
@@ -211,7 +225,10 @@ export default function CoachView(props: Props) {
 
       const undo = () => {
         setMessages((prev) => prev.filter((m) => m.localId !== replyId && m.localId !== promptId));
-        if ("message" in turn) setInput((current) => (current.trim() ? current : turn.message));
+        if ("message" in turn) {
+          setInput((current) => (current.trim() ? current : turn.message));
+          restorePhotos(turn.photos ?? []);
+        }
       };
       const finish = () => {
         settled = true;
@@ -235,7 +252,12 @@ export default function CoachView(props: Props) {
             exam_id: exam.id,
             conversation_id: conversationRef.current ?? undefined,
             client_today: today,
-            ...("message" in turn ? { message: turn.message } : { event: turn.event }),
+            ...("message" in turn
+              ? {
+                message: turn.message,
+                ...(turn.photos?.length ? { images: turn.photos.map((photo) => photo.path) } : {}),
+              }
+              : { event: turn.event }),
           },
           {
             onSources: ({ sources, conversation_id }) => {
@@ -277,7 +299,7 @@ export default function CoachView(props: Props) {
         fail("Polya couldn't answer just now.");
       }
     },
-    [exam.id, resync, today],
+    [exam.id, resync, today, releasePhotos, restorePhotos],
   );
 
   // Answers that arrive mid-turn wait their turn, in order.
@@ -436,13 +458,19 @@ export default function CoachView(props: Props) {
   );
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, attached: ChatPhoto[] = []) => {
       const trimmed = text.trim();
-      if (!trimmed || busyRef.current) return;
-      void runTurn({ message: trimmed });
+      if ((!trimmed && attached.length === 0) || busyRef.current) return;
+      void runTurn({ message: trimmed, ...(attached.length > 0 ? { photos: attached } : {}) });
     },
     [runTurn],
   );
+
+  // The message box's own send: what's typed plus any photos, once they've finished adding.
+  const submitTyped = () => {
+    if (photos.uploading) return;
+    send(input, photos.ready);
+  };
 
   async function suggestTopics() {
     setSuggesting(true);
@@ -667,7 +695,7 @@ export default function CoachView(props: Props) {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
+        <PhotoDropZone onFiles={(files) => void photos.add(files)} className="flex min-w-0 flex-1 flex-col">
           <div
             ref={scrollRef}
             onScroll={(e) => {
@@ -711,10 +739,11 @@ export default function CoachView(props: Props) {
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  send(input);
+                  submitTyped();
                 }}
                 className="flex flex-col gap-[7px] rounded-[10px] border border-line bg-surface px-2.5 py-[9px] shadow-card focus-within:border-ink3"
               >
+                <PhotoTray photos={photos} />
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -722,8 +751,14 @@ export default function CoachView(props: Props) {
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
-                      send(input);
+                      submitTyped();
                     }
+                  }}
+                  onPaste={(event) => {
+                    const pasted = pastedPhotos(event);
+                    if (pasted.length === 0) return;
+                    event.preventDefault();
+                    void photos.add(pasted);
                   }}
                   rows={1}
                   aria-label="Message your exam coach"
@@ -731,6 +766,7 @@ export default function CoachView(props: Props) {
                   className="max-h-[140px] min-h-[22px] resize-none border-none bg-transparent px-1 pt-1 text-[13.5px] leading-normal outline-none placeholder:text-ink3"
                 />
                 <div className="flex items-center gap-2">
+                  <AddPhotoButton photos={photos} disabled={busy} />
                   <button
                     type="button"
                     onClick={openDetails}
@@ -753,7 +789,7 @@ export default function CoachView(props: Props) {
                   ) : (
                     <button
                       type="submit"
-                      disabled={!input.trim()}
+                      disabled={(!input.trim() && photos.ready.length === 0) || photos.uploading}
                       aria-label="Send"
                       className="ml-auto h-[26px] w-7 shrink-0 cursor-pointer rounded-md bg-btn text-[13px] text-btn-text hover:bg-btn-hover disabled:cursor-default disabled:opacity-40"
                     >
@@ -764,7 +800,7 @@ export default function CoachView(props: Props) {
               </form>
             </div>
           </div>
-        </div>
+        </PhotoDropZone>
 
         <aside className="hidden min-h-0 w-[340px] shrink-0 flex-col border-l border-line bg-rail lg:flex">
           {wide ? <CoachRail {...railProps} override={override} onCloseOverride={() => setOverride(null)} /> : null}

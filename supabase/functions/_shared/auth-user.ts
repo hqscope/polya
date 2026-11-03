@@ -23,6 +23,8 @@ export class HttpError extends Error {
 export type AuthenticatedUser = {
   id: string;
   email?: string | null;
+  /** A Supabase anonymous session: signed in without an account. Features that need a real account check this. */
+  isAnonymous: boolean;
 };
 
 export async function requireAuthUser(request: Request): Promise<AuthenticatedUser> {
@@ -52,7 +54,7 @@ export async function requireAuthUser(request: Request): Promise<AuthenticatedUs
     throw new HttpError(`Unauthorized: ${reason}`, 401);
   }
 
-  return { id: data.user.id, email: data.user.email };
+  return { id: data.user.id, email: data.user.email, isAnonymous: data.user.is_anonymous === true };
 }
 
 // User-JWT-scoped client: queries run under RLS as the calling user.

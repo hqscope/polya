@@ -115,11 +115,15 @@ type AnthropicDocumentSource =
   | { type: "base64"; media_type: "application/pdf"; data: string }
   | { type: "file"; file_id: string };
 
+type AnthropicInputBlock =
+  | { type: "document"; source: AnthropicDocumentSource }
+  | { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } };
+
 // Haiku 5.5: adaptive thinking is on by default and sampling parameters are
 // rejected, so the request carries only the document, the prompt, and a low
 // effort level; text is read from content blocks by type.
 async function anthropicTranscribe(
-  source: AnthropicDocumentSource,
+  input: AnthropicInputBlock,
   prompt: string,
   maxTokens: number,
 ): Promise<string> {
@@ -139,7 +143,7 @@ async function anthropicTranscribe(
         {
           role: "user",
           content: [
-            { type: "document", source },
+            input,
             { type: "text", text: prompt },
           ],
         },
@@ -166,7 +170,7 @@ async function anthropicTranscribe(
 
 async function ocrWithAnthropic(pdfBytes: Uint8Array): Promise<string> {
   return await anthropicTranscribe(
-    { type: "base64", media_type: "application/pdf", data: toBase64(pdfBytes) },
+    { type: "document", source: { type: "base64", media_type: "application/pdf", data: toBase64(pdfBytes) } },
     OCR_PROMPT,
     MAX_OUTPUT_TOKENS,
   );
@@ -212,7 +216,7 @@ async function ocrWholeDocument(
   totalPages: number,
 ): Promise<PageText[]> {
   const fileId = await uploadToAnthropicFiles(bytes);
-  const source = { type: "file", file_id: fileId } as const;
+  const source = { type: "document", source: { type: "file", file_id: fileId } } as const;
   try {
     try {
       const text = await anthropicTranscribe(
@@ -259,7 +263,11 @@ function isContentFiltered(err: unknown): boolean {
     /content filtering/i.test(err.message);
 }
 
-async function ocrWithGemini(pdfBytes: Uint8Array): Promise<string> {
+async function ocrWithGemini(
+  bytes: Uint8Array,
+  mimeType: "application/pdf" | "image/jpeg" = "application/pdf",
+  prompt = OCR_PROMPT,
+): Promise<string> {
   const response = await geminiFetchWithRetry(`${GEMINI_ENDPOINT}?key=${GEMINI_KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -268,8 +276,8 @@ async function ocrWithGemini(pdfBytes: Uint8Array): Promise<string> {
         {
           role: "user",
           parts: [
-            { inline_data: { mime_type: "application/pdf", data: toBase64(pdfBytes) } },
-            { text: OCR_PROMPT },
+            { inline_data: { mime_type: mimeType, data: toBase64(bytes) } },
+            { text: prompt },
           ],
         },
       ],
@@ -294,22 +302,66 @@ async function ocrWithGemini(pdfBytes: Uint8Array): Promise<string> {
 }
 
 async function ocrOnePage(pdfBytes: Uint8Array, pageNum: number): Promise<string> {
-  const providers: Array<[AiProvider, (bytes: Uint8Array) => Promise<string>]> = [];
-  if (ANTHROPIC_KEY) providers.push(["anthropic", ocrWithAnthropic]);
-  if (GEMINI_KEY) providers.push(["gemini", ocrWithGemini]);
+  return await firstProvider(
+    [
+      ["anthropic", () => ocrWithAnthropic(pdfBytes)],
+      ["gemini", () => ocrWithGemini(pdfBytes)],
+    ],
+    `page ${pageNum}`,
+  );
+}
 
+// Try each configured provider in order: a decline moves on to the next, a
+// transient failure re-queues the batch, and a page every provider rejects is
+// logged and comes back empty.
+async function firstProvider(
+  runs: Array<[AiProvider, () => Promise<string>]>,
+  what: string,
+): Promise<string> {
   let lastError: unknown = null;
-  for (const [provider, run] of providers) {
+  for (const [provider, run] of runs) {
+    if (provider === "anthropic" ? !ANTHROPIC_KEY : !GEMINI_KEY) continue;
     try {
-      return await run(pdfBytes);
+      return await run();
     } catch (err) {
       if (err instanceof OcrTransientError) throw err;
       lastError = err;
-      console.warn(`[polya-import] ${provider} OCR declined page ${pageNum}, trying next provider:`, err);
+      console.warn(`[polya-import] ${provider} OCR declined ${what}, trying next provider:`, err);
     }
   }
-  console.error(`[polya-import] OCR skipped page ${pageNum}: every provider failed:`, lastError);
+  console.error(`[polya-import] OCR skipped ${what}: every provider failed:`, lastError);
   return "";
+}
+
+const IMAGE_OCR_PROMPT =
+  "Transcribe ALL readable text in this photo of course material (notes, a handout, slides, a " +
+  "whiteboard) into plain text, preserving reading order and line breaks. Include handwriting and " +
+  "text inside figures, tables, and diagrams. Render equations and chemical formulae as inline text " +
+  "(e.g. Vmax, [S], H2O, ATP). Output only the transcribed text — no commentary, no headings you " +
+  "invent. If the photo has no readable text, output nothing.";
+
+// A photo a student added as course material (a JPEG, already shrunk by the
+// browser). Same providers and fallbacks as a scanned PDF page; returns "" for
+// a photo with no readable text or one every provider declined.
+export async function ocrImage(jpegBytes: Uint8Array): Promise<string> {
+  if (!ocrEnabled()) return "";
+  const data = toBase64(jpegBytes);
+  const text = await firstProvider(
+    [
+      [
+        "anthropic",
+        () =>
+          anthropicTranscribe(
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
+            IMAGE_OCR_PROMPT,
+            MAX_OUTPUT_TOKENS,
+          ),
+      ],
+      ["gemini", () => ocrWithGemini(jpegBytes, "image/jpeg", IMAGE_OCR_PROMPT)],
+    ],
+    "a photo",
+  );
+  return text.length >= OCR_MIN_CHARS ? text : "";
 }
 
 // OCR the given 1-indexed pages of a PDF. Returns one PageText per page that

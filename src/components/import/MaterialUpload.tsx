@@ -11,7 +11,12 @@ import { detectStorageFull } from "@/lib/storage-full-client";
 import { AI_BUSY_POLYA_IMPORT_DETAIL } from "@/lib/ai-busy";
 import { POLYA_ERROR_SIGNED_OUT, userMessage } from "@/lib/user-message";
 import { announceImportStarted } from "@/lib/import-events";
-import { MAX_UPLOAD_BYTES } from "../../../supabase/functions/_shared/upload-checks.ts";
+import { isImageFile, PhotoError, shrinkToJpeg } from "@/lib/photos";
+import {
+  MATERIAL_IMAGE_MAX_EDGE,
+  MAX_IMAGE_UPLOAD_BYTES,
+  MAX_UPLOAD_BYTES,
+} from "../../../supabase/functions/_shared/upload-checks.ts";
 
 interface Props {
   courseId: string;
@@ -25,7 +30,12 @@ const KIND_BY_EXT: Record<string, string> = {
   srt: "transcript_srt",
 };
 
-const ACCEPT = ".pdf,.txt,.json,.vtt,.srt";
+// Photos (any format the browser opens) are re-encoded as JPEGs before upload.
+const ACCEPT = ".pdf,.txt,.json,.vtt,.srt,image/*";
+
+function kindFor(file: File, ext: string): string | undefined {
+  return KIND_BY_EXT[ext] ?? (isImageFile(file) ? "image" : undefined);
+}
 
 function addedNote(titles: string[], ready: boolean): string {
   const what = titles.length === 1 ? `“${titles[0]}”` : `${titles.length} files`;
@@ -34,7 +44,7 @@ function addedNote(titles: string[], ready: boolean): string {
     : `Added ${what}. ${titles.length === 1 ? "It's" : "They're"} being prepared and will appear below shortly.`;
 }
 
-// Upload the student's own files (PDFs, lecture transcripts) straight to
+// Upload the student's own files (PDFs, photos, lecture transcripts) straight to
 // storage under their prefix, then register each through the import pump.
 export default function MaterialUpload({ courseId }: Props) {
   const router = useRouter();
@@ -53,9 +63,9 @@ export default function MaterialUpload({ courseId }: Props) {
     const accepted: { file: File; ext: string; kind: string }[] = [];
     for (const file of files) {
       const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-      const kind = KIND_BY_EXT[ext];
-      if (!kind) failed.push(`“${file.name}” isn't a PDF or a transcript.`);
-      else if (file.size > MAX_UPLOAD_BYTES) {
+      const kind = kindFor(file, ext);
+      if (!kind) failed.push(`“${file.name}” isn't a PDF, a photo, or a transcript.`);
+      else if (kind !== "image" && file.size > MAX_UPLOAD_BYTES) {
         failed.push(`“${file.name}” is over 30 MB. Try uploading just the chapters or pages you need.`);
       } else accepted.push({ file, ext, kind });
     }
@@ -78,12 +88,19 @@ export default function MaterialUpload({ courseId }: Props) {
         // registration step only when the failure looks like it.
         let uploading = true;
         try {
-          const storagePath = `${userId}/uploads/${crypto.randomUUID()}.${ext}`;
+          // A photo is shrunk to a JPEG first: small enough to read in one go,
+          // large enough for small print.
+          const isPhoto = kind === "image";
+          const body = isPhoto ? await shrinkToJpeg(file, MATERIAL_IMAGE_MAX_EDGE) : file;
+          if (isPhoto && body.size > MAX_IMAGE_UPLOAD_BYTES) {
+            throw new PhotoError(`“${file.name}” is too large. Try a smaller photo.`);
+          }
+          const storagePath = `${userId}/uploads/${crypto.randomUUID()}.${isPhoto ? "jpg" : ext}`;
           const { error: uploadError } = await supabase.storage
             .from("polya_documents")
             // An empty file.type would store a PDF as text and break the viewer.
-            .upload(storagePath, file, {
-              contentType: kind === "pdf" ? "application/pdf" : file.type || "text/plain",
+            .upload(storagePath, body, {
+              contentType: isPhoto ? "image/jpeg" : kind === "pdf" ? "application/pdf" : file.type || "text/plain",
             });
           // Thrown as-is (not re-wrapped) so the storage-full check can read it.
           if (uploadError) throw uploadError;
@@ -99,6 +116,11 @@ export default function MaterialUpload({ courseId }: Props) {
           });
           added.push({ title, kind });
         } catch (err) {
+          // A photo the browser couldn't open or shrink: only this file fails.
+          if (err instanceof PhotoError) {
+            failed.push(err.message);
+            continue;
+          }
           // Full storage or a busy service would stop every later file too.
           const full = await detectStorageFull(err, { always: uploading });
           if (full) {
@@ -152,13 +174,13 @@ export default function MaterialUpload({ courseId }: Props) {
         <span className="text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink3">
           Add your own files
         </span>
-        <h2 className="text-[15.5px] tracking-[-0.015em]">Upload PDFs or transcripts</h2>
+        <h2 className="text-[15.5px] tracking-[-0.015em]">Upload PDFs, photos, or transcripts</h2>
       </div>
       <p className="m-0 text-[13px] leading-[1.65] text-ink2">
         Add what isn&apos;t in Canvas: textbook chapters, notes, practice exams,
-        formula sheets (PDFs up to 30 MB). Lecture transcripts (.txt, .json,
-        .vtt, .srt) work too, so Polya can point to the exact moment something
-        was said.
+        formula sheets (PDFs up to 30 MB). Photos of handwritten notes, handouts
+        or the whiteboard work too. So do lecture transcripts (.txt, .json,
+        .vtt, .srt), so Polya can point to the exact moment something was said.
       </p>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">

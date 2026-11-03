@@ -5,6 +5,7 @@ import { getAuthenticatedAppUser } from "@/lib/auth/session";
 import { redirectToLogin } from "@/lib/auth/login-redirect";
 import ChatView from "@/components/chat/ChatView";
 import type { ChatMessage } from "@/components/chat/MessageBubble";
+import { imagesFromMeta } from "../../../../../supabase/functions/_shared/chat-images.ts";
 import { buildPracticeSeed } from "../../../../../supabase/functions/_shared/study-seed.ts";
 import type { PartResponse, PartResult } from "../../../../../supabase/functions/_shared/study-grade.ts";
 import type { PublicPart } from "../../../../../supabase/functions/_shared/study-questions.ts";
@@ -95,14 +96,18 @@ export default async function CoursePage({
     if (thread?.exam_id) redirect(`/app/courses/${id}/study/${thread.exam_id}`);
     const { data: rows } = await supabase
       .from("polya_messages")
-      .select("role, content, sources")
+      .select("role, content, sources, meta")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true });
-    initialMessages = ((rows ?? []) as Array<ChatMessage & { sources: unknown }>).map((row) => ({
-      role: row.role,
-      content: row.content,
-      sources: Array.isArray(row.sources) && row.sources.length > 0 ? row.sources : undefined,
-    })) as ChatMessage[];
+    initialMessages = ((rows ?? []) as Array<ChatMessage & { sources: unknown; meta: unknown }>).map((row) => {
+      const photos = imagesFromMeta(row.meta).map((path) => ({ path }));
+      return {
+        role: row.role,
+        content: row.content,
+        sources: Array.isArray(row.sources) && row.sources.length > 0 ? row.sources : undefined,
+        photos: photos.length > 0 ? photos : undefined,
+      };
+    }) as ChatMessage[];
   }
 
   // "Talk it through" from Study: the practice question (and the student's

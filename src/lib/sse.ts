@@ -60,6 +60,8 @@ export interface TutorStreamHandlers {
 export interface TutorRequest {
   course_id: string;
   message: string;
+  /** Paths of photos attached to this message. */
+  images?: string[];
   conversation_id?: string;
   attempt?: boolean;
   mastery?: { phase: "start"; concept: string } | { phase: "answer"; check_id: string };

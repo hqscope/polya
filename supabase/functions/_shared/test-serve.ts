@@ -16,6 +16,8 @@ export const TEST_SERVICE_ROLE_KEY = "test-service-role-key";
 export const TEST_PUMP_SECRET = "test-pump-secret";
 export const TEST_USER_ID = "00000000-0000-4000-8000-000000000001";
 export const TEST_USER_JWT = "test-user-jwt";
+/** A Supabase anonymous session for the same user id: signed in, but without an account. */
+export const TEST_ANON_JWT = "test-anon-jwt";
 
 const BACKEND_ORIGIN = "http://backend.test";
 
@@ -78,6 +80,9 @@ export function jsonResponse(data: unknown, status = 200): Response {
 export function authRoute(url: URL, request: Request): Response | null {
   if (url.pathname !== "/auth/v1/user") return null;
   const bearer = (request.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (bearer === TEST_ANON_JWT) {
+    return jsonResponse({ id: TEST_USER_ID, aud: "authenticated", role: "authenticated", is_anonymous: true });
+  }
   if (bearer !== TEST_USER_JWT) {
     return jsonResponse({ code: 401, error_code: "bad_jwt", msg: "invalid JWT" }, 401);
   }

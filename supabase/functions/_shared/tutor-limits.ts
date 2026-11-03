@@ -14,3 +14,10 @@ export function checkTutorMessage(message: unknown): TutorMessageCheck {
   if (!trimmed) return "missing";
   return trimmed.length > TUTOR_MESSAGE_MAX_CHARS ? "too_long" : "ok";
 }
+
+/** Like checkTutorMessage, but a message that carries photos may have no text. */
+export function checkMessageWithPhotos(message: unknown, photoCount: number): TutorMessageCheck {
+  const empty = message === undefined || message === null || (typeof message === "string" && !message.trim());
+  if (photoCount > 0 && empty) return "ok";
+  return checkTutorMessage(message);
+}
